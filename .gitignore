@@ -1,0 +1,34 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+!example.env
+!.env.example
+
+# Spring Boot config
+application.properties
+application.yml
+application-local.yml
+application-dev.yml
+!Example.application.properties
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# Build outputs
+target/
+build/
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store

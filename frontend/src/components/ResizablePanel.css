@@ -1,0 +1,84 @@
+.resizable-panel {
+    position: relative;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    transition: width 0.18s ease;
+}
+
+.resizable-panel--dragging {
+    transition: none;
+    user-select: none;
+}
+
+.resizable-panel--collapsed .resizable-panel__content {
+    display: none;
+}
+
+.resizable-panel__content {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow: hidden;
+}
+
+.resizable-panel__collapse-btn {
+    position: absolute;
+    top: 8px;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    background: var(--lb-surface-raised);
+    border: 1px solid var(--lb-border);
+    border-radius: 6px;
+    color: var(--lb-text-faint);
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.resizable-panel__collapse-btn:hover {
+    color: var(--lb-accent);
+    border-color: var(--lb-accent);
+}
+
+.resizable-panel--left .resizable-panel__collapse-btn {
+    right: 8px;
+}
+
+.resizable-panel--right .resizable-panel__collapse-btn {
+    left: 8px;
+}
+
+.resizable-panel--collapsed .resizable-panel__collapse-btn {
+    position: static;
+    margin: 8px auto 0;
+}
+
+.resizable-panel__handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: col-resize;
+    touch-action: none;
+    z-index: 2;
+}
+
+.resizable-panel--left .resizable-panel__handle {
+    right: -3px;
+}
+
+.resizable-panel--right .resizable-panel__handle {
+    left: -3px;
+}
+
+.resizable-panel__handle:hover,
+.resizable-panel--dragging .resizable-panel__handle {
+    background: var(--lb-accent-glow);
+}

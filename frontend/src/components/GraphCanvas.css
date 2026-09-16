@@ -1,0 +1,104 @@
+.graph-canvas {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    background: var(--lb-bg);
+    overflow: hidden;
+}
+
+.graph-canvas__loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--lb-text-faint);
+    font-family: var(--lb-font-mono);
+    font-size: 13px;
+}
+
+.graph-canvas__svg {
+    display: block;
+    cursor: grab;
+    touch-action: none; /* let d3-zoom fully own wheel/touch gestures instead of the
+        browser's default scroll/pinch handling competing with it */
+}
+
+.graph-canvas__svg:active {
+    cursor: grabbing;
+}
+
+.graph-canvas__grid-dot {
+    fill: var(--lb-border-soft);
+}
+
+.graph-canvas__truncation-notice {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    z-index: 2;
+    background: rgba(240, 180, 41, 0.12);
+    border: 1px solid rgba(240, 180, 41, 0.35);
+    color: var(--lb-warning);
+    font-size: 11.5px;
+    padding: 7px 10px;
+    border-radius: var(--lb-radius-sm);
+}
+
+.graph-canvas__edge {
+    stroke: rgba(255, 255, 255, 0.14);
+    stroke-width: 1.1;
+    transition: opacity 0.15s ease, stroke 0.15s ease;
+}
+
+.graph-canvas__edge--active {
+    stroke: var(--lb-accent);
+    stroke-width: 1.8;
+    opacity: 0.95;
+    filter: drop-shadow(0 0 3px var(--lb-accent-glow));
+}
+
+.graph-canvas__edge--faded {
+    opacity: 0.08;
+}
+
+.graph-canvas__node-group {
+    cursor: pointer;
+    touch-action: none; /* pointer events drive dragging, don't let the browser also try to scroll/pan */
+}
+
+.graph-canvas__node-group--faded {
+    opacity: 0.15;
+}
+
+.graph-canvas__node {
+    stroke-width: 1.5;
+    transition: r 0.1s ease;
+}
+
+/* Colorful node-group palette (purely presentational, hashed from folder path) */
+.graph-canvas__node--group-0 { fill: #a78bfa; stroke: #a78bfa; filter: drop-shadow(0 0 4px rgba(167, 139, 250, 0.6)); }
+.graph-canvas__node--group-1 { fill: #4ade80; stroke: #4ade80; filter: drop-shadow(0 0 4px rgba(74, 222, 128, 0.6)); }
+.graph-canvas__node--group-2 { fill: #f472b6; stroke: #f472b6; filter: drop-shadow(0 0 4px rgba(244, 114, 182, 0.6)); }
+.graph-canvas__node--group-3 { fill: #fb923c; stroke: #fb923c; filter: drop-shadow(0 0 4px rgba(251, 146, 60, 0.6)); }
+.graph-canvas__node--group-4 { fill: #60a5fa; stroke: #60a5fa; filter: drop-shadow(0 0 4px rgba(96, 165, 250, 0.6)); }
+.graph-canvas__node--group-5 { fill: #2dd4bf; stroke: #2dd4bf; filter: drop-shadow(0 0 4px rgba(45, 212, 191, 0.6)); }
+.graph-canvas__node--group-6 { fill: #facc15; stroke: #facc15; filter: drop-shadow(0 0 4px rgba(250, 204, 21, 0.6)); }
+.graph-canvas__node--group-7 { fill: #f87171; stroke: #f87171; filter: drop-shadow(0 0 4px rgba(248, 113, 113, 0.6)); }
+
+.graph-canvas__node-group:hover .graph-canvas__node {
+    stroke: #fff;
+}
+
+.graph-canvas__node--selected {
+    stroke: #fff;
+    stroke-width: 2.2;
+}
+
+.graph-canvas__node-label {
+    fill: var(--lb-text-muted);
+    font-family: var(--lb-font-mono);
+    font-size: 9px;
+    pointer-events: none;
+    user-select: none;
+}

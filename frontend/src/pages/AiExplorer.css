@@ -1,0 +1,1144 @@
+@import url('https://fonts.googleapis.com/css2?family=Special+Elite&family=Share+Tech+Mono&display=swap');
+
+.ai-explorer {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    background: var(--lb-bg);
+    color: var(--lb-text);
+    font-family: var(--lb-font-body);
+}
+
+.ai-explorer__body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    min-width: 900px;
+    gap: 12px;
+    padding: 12px;
+}
+
+/* --- Left: tree + minimap (layout handled by ResizablePanel itself; see components/ResizablePanel.css) --- */
+
+.ai-explorer__tree-panel {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--lb-surface);
+    backdrop-filter: var(--lb-blur);
+    -webkit-backdrop-filter: var(--lb-blur);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-lg);
+    padding: 14px 0 10px;
+    overflow: hidden;
+}
+
+.ai-explorer__tree-panel .folder-tree {
+    flex: 1;
+    overflow-y: auto;
+}
+
+.ai-explorer__search {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0 14px 10px;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-sm);
+    color: var(--lb-text-faint);
+    flex-shrink: 0;
+}
+
+.ai-explorer__search input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--lb-text);
+    font-size: 12px;
+}
+
+.ai-explorer__search input::placeholder {
+    color: var(--lb-text-faint);
+}
+
+.ai-explorer__panel-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--lb-text-faint);
+    margin: 0 0 10px;
+    padding: 0 14px;
+}
+
+.ai-explorer__minimap-panel {
+    flex-shrink: 0;
+    background: var(--lb-surface);
+    backdrop-filter: var(--lb-blur);
+    -webkit-backdrop-filter: var(--lb-blur);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-lg);
+    padding: 14px 0 10px;
+}
+
+.ai-explorer__minimap-canvas {
+    height: 150px;
+    margin: 0 10px;
+    border-radius: var(--lb-radius-sm);
+    overflow: hidden;
+    background: var(--lb-bg);
+}
+
+/* --- Center: editor --- */
+.ai-explorer__editor {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    background: #14141f;
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-lg);
+    overflow: hidden;
+}
+
+.ai-explorer__tabs {
+    display: flex;
+    overflow-x: auto;
+    background: var(--lb-surface-raised);
+    border-bottom: 1px solid var(--lb-border);
+    flex-shrink: 0;
+}
+
+.ai-explorer__tab {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    font-family: var(--lb-font-mono);
+    font-size: 12px;
+    color: var(--lb-text-muted);
+    border-right: 1px solid var(--lb-border);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.ai-explorer__tab:hover {
+    color: var(--lb-text);
+}
+
+.ai-explorer__tab--active {
+    background: rgba(139, 92, 246, 0.1);
+    color: var(--lb-accent);
+    box-shadow: inset 0 -2px 0 var(--lb-accent);
+}
+
+.ai-explorer__tab svg {
+    opacity: 0.6;
+}
+
+.ai-explorer__tab svg:hover {
+    opacity: 1;
+}
+
+.ai-explorer__editor-body {
+    flex: 1;
+    min-height: 0;
+}
+
+.ai-explorer__empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    max-width: 380px;
+    margin: 0 auto;
+    text-align: center;
+    color: var(--lb-text-faint);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+/* --- Right: chat --- */
+.ai-explorer__chat {
+    background: var(--lb-surface);
+    backdrop-filter: var(--lb-blur);
+    -webkit-backdrop-filter: var(--lb-blur);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-lg);
+    padding: 16px 14px;
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.ai-explorer__chat .ai-explorer__panel-title {
+    padding: 0;
+    margin-bottom: 12px;
+}
+
+.ai-explorer__focused {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    background: var(--lb-accent-dim);
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    border-radius: 20px;
+    padding: 6px 12px;
+    margin-bottom: 12px;
+    align-self: flex-start;
+    max-width: 100%;
+}
+
+.ai-explorer__focused svg {
+    color: var(--lb-accent);
+    flex-shrink: 0;
+}
+
+.ai-explorer__focused-node {
+    font-family: var(--lb-font-mono);
+    font-size: 11.5px;
+    color: var(--lb-accent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ai-explorer__suggested {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 14px;
+}
+
+.ai-explorer__suggested-label {
+    width: 100%;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--lb-text-faint);
+    margin-bottom: 2px;
+}
+
+/* --- Persona switcher (Normal / Detective / Mission Control) --- */
+.ai-explorer__persona-switcher {
+    display: flex;
+    gap: 4px;
+    padding: 10px 14px 0;
+}
+
+.ai-explorer__persona-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 6px 4px;
+    border-radius: var(--lb-radius-sm);
+    border: 1px solid var(--lb-border);
+    background: transparent;
+    color: var(--lb-text-faint);
+    font-size: 10.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.ai-explorer__persona-btn:hover {
+    color: var(--lb-text-muted);
+    border-color: var(--lb-border-soft);
+}
+
+.ai-explorer__persona-btn--active {
+    color: var(--lb-accent);
+    border-color: var(--lb-accent);
+    background: color-mix(in srgb, var(--lb-accent) 12%, transparent);
+}
+
+/* --- Left-panel subtle persona tinting (kept light — the tree itself must stay
+   readable/functional in every mode, so only borders/titles shift) --- */
+.ai-explorer--detective .ai-explorer__tree-panel,
+.ai-explorer--detective .ai-explorer__minimap-panel {
+    border-color: rgba(217, 140, 63, 0.3);
+}
+.ai-explorer--detective .ai-explorer__tree-panel .ai-explorer__panel-title,
+.ai-explorer--detective .ai-explorer__minimap-panel .ai-explorer__panel-title {
+    font-family: 'Special Elite', var(--lb-font-mono);
+    color: #e8c78f;
+}
+
+.ai-explorer--missionControl .ai-explorer__tree-panel,
+.ai-explorer--missionControl .ai-explorer__minimap-panel {
+    border-color: rgba(69, 212, 232, 0.3);
+}
+.ai-explorer--missionControl .ai-explorer__tree-panel .ai-explorer__panel-title,
+.ai-explorer--missionControl .ai-explorer__minimap-panel .ai-explorer__panel-title {
+    font-family: 'Share Tech Mono', var(--lb-font-mono);
+    letter-spacing: 0.1em;
+    color: #45d4e8;
+}
+
+/* --- Persona side panels (Key Clues / Investigation Log, Key Metrics / Mission Timeline) --- */
+.ai-explorer__persona-panel {
+    margin-top: 12px;
+    padding: 14px 12px;
+    border-radius: var(--lb-radius-lg);
+    border: 1px solid var(--lb-border);
+    background: var(--lb-surface);
+}
+
+.ai-explorer__persona-panel h4 {
+    margin: 0 0 8px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--lb-text-faint);
+}
+.ai-explorer__persona-panel h4:not(:first-child) { margin-top: 14px; }
+
+.ai-explorer__legend { display: flex; flex-direction: column; gap: 5px; }
+.ai-explorer__legend-row {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 11.5px; color: var(--lb-text-muted);
+}
+.ai-explorer__legend-row em {
+    margin-left: auto;
+    font-style: normal;
+    font-family: var(--lb-font-mono);
+    color: var(--lb-text-faint);
+}
+.ai-explorer__legend-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.ai-explorer__legend-dot--normal { background: #7c8a9e; }
+.ai-explorer__legend-dot--coupled { background: #45d4e8; }
+.ai-explorer__legend-dot--risk { background: #f5a524; }
+.ai-explorer__legend-dot--circular { background: #ef4763; box-shadow: 0 0 5px #ef4763; }
+.ai-explorer__legend-dot--unused { background: #5b6472; }
+
+.ai-explorer__log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ai-explorer__log li { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--lb-text-muted); }
+.ai-explorer__log li svg:first-child { flex: 0 0 auto; color: var(--lb-text-faint); }
+.ai-explorer__log li svg.ai-explorer__log-done { color: #4ade80; }
+
+.ai-explorer__metrics-row { display: flex; align-items: center; gap: 10px; }
+.ai-explorer__mini-ring { position: relative; flex: 0 0 auto; }
+.ai-explorer__mini-ring-track { fill: none; stroke: var(--lb-border); stroke-width: 4px; }
+.ai-explorer__mini-ring-progress { fill: none; stroke: var(--lb-accent); stroke-width: 4px; stroke-linecap: round; }
+.ai-explorer__mini-ring-label {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; line-height: 1.1;
+}
+.ai-explorer__mini-ring-label strong { font-size: 13px; color: var(--lb-text); font-family: var(--lb-font-display); }
+.ai-explorer__mini-ring-label span { font-size: 8px; color: var(--lb-text-faint); }
+
+.ai-explorer__metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; flex: 1; }
+.ai-explorer__metrics-grid div { display: flex; flex-direction: column; }
+.ai-explorer__metrics-grid strong { font-size: 13px; font-family: var(--lb-font-display); color: var(--lb-text); }
+.ai-explorer__metrics-grid span { font-size: 9px; color: var(--lb-text-faint); text-transform: uppercase; letter-spacing: 0.04em; }
+.ai-explorer__metrics-alert strong { color: var(--lb-error); }
+
+/* --- Detective-specific side panel skin --- */
+.ai-explorer--detective .ai-explorer__persona-panel--detective {
+    background: linear-gradient(160deg, #4a3524 0%, #2e1f13 100%);
+    border-color: #5c4530;
+}
+.ai-explorer__persona-panel--detective h4 { font-family: 'Special Elite', var(--lb-font-mono); color: #e8c78f; opacity: 0.9; }
+.ai-explorer__persona-panel--detective .ai-explorer__legend-row,
+.ai-explorer__persona-panel--detective .ai-explorer__log li { color: #dcc7a3; }
+.ai-explorer__persona-panel--detective .ai-explorer__legend-row em { color: #b89968; }
+.ai-explorer__persona-panel--detective .ai-explorer__log-done { color: #d98c3f; }
+
+/* --- Mission Control-specific side panel skin --- */
+.ai-explorer--missionControl .ai-explorer__persona-panel--missionControl {
+    background:
+        repeating-linear-gradient(0deg, rgba(69, 212, 232, 0.05) 0px, transparent 1px, transparent 18px, rgba(69, 212, 232, 0.05) 19px),
+        linear-gradient(160deg, #071018 0%, #05141c 100%);
+    border-color: rgba(69, 212, 232, 0.35);
+}
+.ai-explorer__persona-panel--missionControl h4 { font-family: 'Share Tech Mono', var(--lb-font-mono); color: #45d4e8; letter-spacing: 0.1em; }
+.ai-explorer__persona-panel--missionControl .ai-explorer__log li,
+.ai-explorer__persona-panel--missionControl .ai-explorer__metrics-grid span { color: #6fc9d6; font-family: 'Share Tech Mono', var(--lb-font-mono); }
+.ai-explorer__persona-panel--missionControl .ai-explorer__metrics-grid strong { color: #d4f6fb; font-family: 'Share Tech Mono', var(--lb-font-mono); }
+.ai-explorer__persona-panel--missionControl .ai-explorer__mini-ring-progress { stroke: #45d4e8; filter: drop-shadow(0 0 4px rgba(69, 212, 232, 0.6)); }
+.ai-explorer__persona-panel--missionControl .ai-explorer__mini-ring-label strong { color: #45d4e8; }
+
+
+.ai-explorer--detective .ai-explorer__chat {
+    --lb-accent: #d98c3f;
+    --lb-accent-glow: rgba(217, 140, 63, 0.35);
+}
+
+.ai-explorer--missionControl .ai-explorer__chat {
+    --lb-accent: #45d4e8;
+    --lb-accent-glow: rgba(69, 212, 232, 0.35);
+}
+
+/* ===========================================================================
+   DETECTIVE — a warm, wood-and-cork investigation board. Suggested prompts
+   read as pinned index cards; messages sit on cream note-paper; headings use
+   a typewriter face. Deliberately doesn't touch markdown/code readability —
+   code blocks stay in the normal mono font.
+   =========================================================================== */
+.ai-explorer--detective .ai-explorer__chat {
+    background:
+        radial-gradient(circle at 15% 20%, rgba(0, 0, 0, 0.25) 0, transparent 3%),
+        radial-gradient(circle at 68% 42%, rgba(0, 0, 0, 0.22) 0, transparent 2.5%),
+        radial-gradient(circle at 40% 75%, rgba(0, 0, 0, 0.22) 0, transparent 2.5%),
+        radial-gradient(circle at 85% 85%, rgba(0, 0, 0, 0.2) 0, transparent 2.5%),
+        repeating-linear-gradient(115deg, rgba(0, 0, 0, 0.08) 0px, transparent 2px, transparent 26px, rgba(0, 0, 0, 0.06) 28px),
+        linear-gradient(160deg, #4a3524 0%, #3a2818 55%, #2e1f13 100%);
+    border-color: #5c4530;
+}
+
+.ai-explorer--detective .ai-explorer__chat .ai-explorer__panel-title {
+    font-family: 'Special Elite', var(--lb-font-mono);
+    letter-spacing: 0.04em;
+    color: #f3d9a8;
+    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+}
+
+.ai-explorer--detective .ai-explorer__icon-btn {
+    color: #e8c78f;
+    border-color: rgba(243, 217, 168, 0.25);
+}
+.ai-explorer--detective .ai-explorer__icon-btn:hover { color: #fff; border-color: #d98c3f; }
+
+.ai-explorer--detective .ai-explorer__focused {
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px dashed rgba(217, 140, 63, 0.5);
+    border-radius: 3px;
+}
+.ai-explorer--detective .ai-explorer__focused-node { font-family: 'Special Elite', var(--lb-font-mono); }
+
+.ai-explorer--detective .ai-explorer__suggested-label {
+    font-family: 'Special Elite', var(--lb-font-mono);
+    color: #e8c78f;
+    opacity: 0.8;
+}
+
+.ai-explorer--detective .ai-explorer__suggested-chip {
+    background: #f3e6c8;
+    color: #2e1f13;
+    border: none;
+    border-radius: 2px;
+    font-family: 'Special Elite', var(--lb-font-mono);
+    font-size: 10.5px;
+    box-shadow: 0 3px 6px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255, 255, 255, 0.4) inset;
+    transform: rotate(-1.4deg);
+    position: relative;
+    padding-top: 9px;
+}
+.ai-explorer--detective .ai-explorer__suggested-chip:nth-child(even) { transform: rotate(1.6deg); }
+.ai-explorer--detective .ai-explorer__suggested-chip:nth-child(3n) { transform: rotate(-0.6deg); }
+.ai-explorer--detective .ai-explorer__suggested-chip::before {
+    content: '';
+    position: absolute; top: -3px; left: 50%; transform: translateX(-50%);
+    width: 7px; height: 7px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #e0574a, #9c1c11);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+.ai-explorer--detective .ai-explorer__suggested-chip:hover:not(:disabled) {
+    color: #2e1f13;
+    border-color: transparent;
+    transform: rotate(0deg) scale(1.04);
+}
+.ai-explorer--detective .ai-explorer__suggested-chip svg { color: #9c1c11; }
+
+.ai-explorer--detective .ai-explorer__chat-empty {
+    background: #f3e6c8;
+    color: #2e1f13;
+    font-family: 'Special Elite', var(--lb-font-mono);
+    padding: 12px 14px;
+    border-radius: 2px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+    transform: rotate(-0.6deg);
+}
+
+.ai-explorer--detective .ai-explorer__message--assistant {
+    background: #f3e6c8;
+    color: #2e1f13;
+    border: none;
+    border-left: 3px solid #9c1c11;
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.4);
+}
+.ai-explorer--detective .ai-explorer__message--assistant .ai-explorer__message-content { font-family: var(--lb-font-body); }
+.ai-explorer--detective .ai-explorer__message--user {
+    background: linear-gradient(135deg, #d98c3f, #9c5a1f);
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.4);
+}
+.ai-explorer--detective .ai-explorer__agent-badge {
+    font-family: 'Special Elite', var(--lb-font-mono);
+    background: rgba(0, 0, 0, 0.3);
+    color: #f3d9a8;
+}
+.ai-explorer--detective .ai-explorer__source-chip {
+    background: rgba(0, 0, 0, 0.25);
+    border-color: rgba(243, 217, 168, 0.3);
+    color: #e8c78f;
+}
+
+.ai-explorer--detective .ai-explorer__chat-input-row input {
+    background: rgba(0, 0, 0, 0.3);
+    border-color: rgba(243, 217, 168, 0.25);
+    color: #f3d9a8;
+    font-family: 'Special Elite', var(--lb-font-mono);
+}
+.ai-explorer--detective .ai-explorer__chat-input-row input::placeholder { color: rgba(243, 217, 168, 0.4); }
+.ai-explorer--detective .ai-explorer__chat-input-row button {
+    background: linear-gradient(135deg, #d98c3f, #9c5a1f);
+}
+
+.ai-explorer--detective .ai-explorer__persona-btn--active {
+    color: #f3d9a8;
+    border-color: #d98c3f;
+    border-style: double;
+    border-width: 3px;
+    background: rgba(217, 140, 63, 0.15);
+    font-family: 'Special Elite', var(--lb-font-mono);
+    letter-spacing: 0.03em;
+    transform: rotate(-1deg);
+}
+
+/* ===========================================================================
+   MISSION CONTROL — a dark sci-fi HUD: faint grid backdrop, scanning glow,
+   corner-bracket frame, terminal-style prompts and readouts.
+   =========================================================================== */
+.ai-explorer--missionControl .ai-explorer__chat {
+    background:
+        repeating-linear-gradient(0deg, rgba(69, 212, 232, 0.05) 0px, transparent 1px, transparent 22px, rgba(69, 212, 232, 0.05) 23px),
+        repeating-linear-gradient(90deg, rgba(69, 212, 232, 0.05) 0px, transparent 1px, transparent 22px, rgba(69, 212, 232, 0.05) 23px),
+        linear-gradient(160deg, #071018 0%, #05141c 60%, #030b11 100%);
+    border: 1px solid rgba(69, 212, 232, 0.35);
+    position: relative;
+    box-shadow: 0 0 0 1px rgba(69, 212, 232, 0.08) inset, 0 0 24px rgba(69, 212, 232, 0.08) inset;
+}
+.ai-explorer--missionControl .ai-explorer__chat::before,
+.ai-explorer--missionControl .ai-explorer__chat::after {
+    content: '';
+    position: absolute;
+    width: 16px; height: 16px;
+    pointer-events: none;
+    border-color: #45d4e8;
+    opacity: 0.8;
+}
+.ai-explorer--missionControl .ai-explorer__chat::before {
+    top: 8px; left: 8px;
+    border-top: 2px solid; border-left: 2px solid;
+}
+.ai-explorer--missionControl .ai-explorer__chat::after {
+    bottom: 8px; right: 8px;
+    border-bottom: 2px solid; border-right: 2px solid;
+}
+
+.ai-explorer--missionControl .ai-explorer__chat .ai-explorer__panel-title {
+    font-family: 'Share Tech Mono', var(--lb-font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #45d4e8;
+    text-shadow: 0 0 8px rgba(69, 212, 232, 0.6);
+}
+.ai-explorer--missionControl .ai-explorer__chat .ai-explorer__panel-title::before {
+    content: '● '; color: #4ade80; animation: mc-blink 1.6s ease-in-out infinite;
+}
+@keyframes mc-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+.ai-explorer--missionControl .ai-explorer__icon-btn {
+    color: #45d4e8;
+    border-color: rgba(69, 212, 232, 0.3);
+}
+.ai-explorer--missionControl .ai-explorer__icon-btn:hover { color: #fff; border-color: #45d4e8; box-shadow: 0 0 8px rgba(69, 212, 232, 0.5); }
+
+.ai-explorer--missionControl .ai-explorer__focused {
+    background: rgba(69, 212, 232, 0.08);
+    border: 1px solid rgba(69, 212, 232, 0.4);
+    border-radius: 2px;
+}
+.ai-explorer--missionControl .ai-explorer__focused-node { font-family: 'Share Tech Mono', var(--lb-font-mono); }
+
+.ai-explorer--missionControl .ai-explorer__suggested-label {
+    font-family: 'Share Tech Mono', var(--lb-font-mono);
+    color: #45d4e8;
+    letter-spacing: 0.1em;
+}
+.ai-explorer--missionControl .ai-explorer__suggested-label::before { content: '// '; }
+
+.ai-explorer--missionControl .ai-explorer__suggested-chip {
+    background: rgba(69, 212, 232, 0.06);
+    border: 1px solid rgba(69, 212, 232, 0.35);
+    border-radius: 2px;
+    color: #a8ecf5;
+    font-family: 'Share Tech Mono', var(--lb-font-mono);
+    font-size: 10.5px;
+}
+.ai-explorer--missionControl .ai-explorer__suggested-chip::before { content: '> '; color: #4ade80; }
+.ai-explorer--missionControl .ai-explorer__suggested-chip:hover:not(:disabled) {
+    background: rgba(69, 212, 232, 0.14);
+    border-color: #45d4e8;
+    color: #fff;
+    box-shadow: 0 0 10px rgba(69, 212, 232, 0.35);
+}
+.ai-explorer--missionControl .ai-explorer__suggested-chip svg { color: #45d4e8; }
+
+.ai-explorer--missionControl .ai-explorer__chat-empty {
+    font-family: 'Share Tech Mono', var(--lb-font-mono);
+    color: #6fc9d6;
+    border: 1px dashed rgba(69, 212, 232, 0.3);
+    border-radius: 2px;
+    padding: 10px 12px;
+}
+.ai-explorer--missionControl .ai-explorer__chat-empty::before { content: '> '; color: #4ade80; }
+
+.ai-explorer--missionControl .ai-explorer__message--assistant {
+    background: rgba(69, 212, 232, 0.05);
+    border: 1px solid rgba(69, 212, 232, 0.25);
+    border-left: 2px solid #45d4e8;
+    color: #d4f6fb;
+}
+.ai-explorer--missionControl .ai-explorer__message--user {
+    background: linear-gradient(135deg, #0e5a68, #073a44);
+    border: 1px solid rgba(69, 212, 232, 0.4);
+}
+.ai-explorer--missionControl .ai-explorer__agent-badge {
+    font-family: 'Share Tech Mono', var(--lb-font-mono);
+    background: rgba(69, 212, 232, 0.12);
+    color: #45d4e8;
+    border-radius: 2px;
+}
+.ai-explorer--missionControl .ai-explorer__source-chip {
+    font-family: 'Share Tech Mono', var(--lb-font-mono);
+    background: rgba(69, 212, 232, 0.06);
+    border-color: rgba(69, 212, 232, 0.3);
+    color: #6fc9d6;
+    border-radius: 2px;
+}
+
+.ai-explorer--missionControl .ai-explorer__chat-input-row input {
+    background: rgba(69, 212, 232, 0.05);
+    border: 1px solid rgba(69, 212, 232, 0.3);
+    border-radius: 2px;
+    color: #d4f6fb;
+    font-family: 'Share Tech Mono', var(--lb-font-mono);
+}
+.ai-explorer--missionControl .ai-explorer__chat-input-row input::placeholder { color: rgba(69, 212, 232, 0.4); }
+.ai-explorer--missionControl .ai-explorer__chat-input-row button {
+    background: linear-gradient(135deg, #45d4e8, #0e5a68);
+    border-radius: 2px;
+}
+
+.ai-explorer--missionControl .ai-explorer__persona-btn--active {
+    color: #fff;
+    border-color: #45d4e8;
+    border-radius: 2px;
+    background: rgba(69, 212, 232, 0.15);
+    font-family: 'Share Tech Mono', var(--lb-font-mono);
+    letter-spacing: 0.08em;
+    box-shadow: 0 0 10px rgba(69, 212, 232, 0.4);
+}
+
+.ai-explorer__suggested-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--lb-border);
+    border-radius: 20px;
+    color: var(--lb-text-muted);
+    font-size: 11px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.ai-explorer__suggested-chip:hover:not(:disabled) {
+    border-color: var(--lb-accent);
+    color: var(--lb-accent);
+}
+
+.ai-explorer__suggested-chip:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.ai-explorer__suggested-chip svg {
+    color: var(--lb-accent);
+}
+
+.ai-explorer__messages {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.ai-explorer__chat-empty {
+    color: var(--lb-text-faint);
+    font-size: 12.5px;
+    line-height: 1.6;
+    margin: 8px 0;
+}
+
+.ai-explorer__message {
+    padding: 10px 12px;
+    border-radius: var(--lb-radius-md);
+    font-size: 12.5px;
+    line-height: 1.55;
+}
+
+.ai-explorer__message p {
+    margin: 0;
+    white-space: pre-wrap;
+}
+
+.ai-explorer__message--user {
+    background: var(--lb-accent-gradient);
+    color: #fff;
+    align-self: flex-end;
+    max-width: 90%;
+}
+
+.ai-explorer__message--assistant {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--lb-border);
+    color: var(--lb-text);
+}
+
+.ai-explorer__message--error {
+    background: var(--lb-error-dim);
+    border: 1px solid rgba(240, 103, 138, 0.3);
+    color: var(--lb-error);
+}
+
+.ai-explorer__message--loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--lb-text-faint);
+}
+
+.ai-explorer__spinner {
+    animation: lb-ai-spin 0.9s linear infinite;
+}
+
+@keyframes lb-ai-spin {
+    to { transform: rotate(360deg); }
+}
+
+.ai-explorer__agent-badge {
+    display: inline-block;
+    font-family: var(--lb-font-mono);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--lb-accent);
+    background: var(--lb-accent-dim);
+    padding: 2px 7px;
+    border-radius: 20px;
+    margin-bottom: 6px;
+}
+
+.ai-explorer__sources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 8px;
+}
+
+.ai-explorer__source-chip {
+    font-family: var(--lb-font-mono);
+    font-size: 10px;
+    color: var(--lb-text-faint);
+    background: var(--lb-bg);
+    border: 1px solid var(--lb-border);
+    padding: 2px 8px;
+    border-radius: 20px;
+}
+
+.ai-explorer__chat-input-row {
+    margin-top: auto;
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.ai-explorer__chat-input-row input {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-sm);
+    padding: 10px 12px;
+    color: var(--lb-text);
+    font-size: 12.5px;
+    outline: none;
+    transition: border-color 0.15s ease;
+}
+
+.ai-explorer__chat-input-row input:focus {
+    border-color: var(--lb-accent);
+}
+
+.ai-explorer__chat-input-row input::placeholder {
+    color: var(--lb-text-faint);
+}
+
+.ai-explorer__chat-input-row input:disabled {
+    opacity: 0.6;
+}
+
+.ai-explorer__chat-input-row button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--lb-accent-gradient);
+    border: none;
+    border-radius: var(--lb-radius-sm);
+    padding: 10px 14px;
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 4px 16px -4px var(--lb-accent-glow);
+}
+
+.ai-explorer__chat-input-row button:disabled {
+    background: var(--lb-border);
+    color: var(--lb-text-faint);
+    box-shadow: none;
+    cursor: not-allowed;
+}
+.ai-explorer__message-content {
+    font-size: 12.5px;
+    line-height: 1.55;
+}
+
+.ai-explorer__message-content p {
+    margin: 0 0 8px 0;
+    white-space: pre-wrap;
+}
+
+.ai-explorer__message-content p:last-child {
+    margin-bottom: 0;
+}
+
+.ai-explorer__message-content code {
+    background: rgba(255, 255, 255, 0.08);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 11.5px;
+    font-family: var(--lb-font-mono);
+}
+
+.ai-explorer__message-content pre {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--lb-border);
+    padding: 10px;
+    border-radius: var(--lb-radius-sm);
+    overflow-x: auto;
+    margin: 8px 0;
+}
+
+.ai-explorer__message-content pre code {
+    background: none;
+    padding: 0;
+}
+
+.ai-explorer__message-content ul,
+.ai-explorer__message-content ol {
+    margin: 6px 0;
+    padding-left: 20px;
+}
+
+.ai-explorer__message-content li {
+    margin-bottom: 3px;
+}
+
+.ai-explorer__message-content strong {
+    font-weight: 600;
+    color: var(--lb-text);
+}
+
+.ai-explorer__message-content h1,
+.ai-explorer__message-content h2,
+.ai-explorer__message-content h3 {
+    font-size: 13px;
+    font-weight: 700;
+    margin: 10px 0 6px;
+    color: var(--lb-text);
+}
+
+.ai-explorer__message-content a {
+    color: var(--lb-accent);
+    text-decoration: underline;
+}
+.ai-explorer__chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.ai-explorer__chat-header .ai-explorer__panel-title {
+    margin-bottom: 0;
+}
+
+.ai-explorer__chat-header-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.ai-explorer__icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-sm);
+    color: var(--lb-text-muted);
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.ai-explorer__icon-btn:hover {
+    border-color: var(--lb-accent);
+    color: var(--lb-accent);
+}
+
+.ai-explorer__history-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 160px;
+    overflow-y: auto;
+    margin-bottom: 12px;
+    padding: 6px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-sm);
+}
+
+.ai-explorer__history-empty {
+    color: var(--lb-text-faint);
+    font-size: 11.5px;
+    margin: 4px;
+}
+
+.ai-explorer__history-item {
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: var(--lb-text-muted);
+    font-size: 11.5px;
+    padding: 6px 8px;
+    border-radius: var(--lb-radius-sm);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ai-explorer__history-item:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--lb-text);
+}
+
+.ai-explorer__history-item--active {
+    background: var(--lb-accent-dim);
+    color: var(--lb-accent);
+}
+/* ===========================================================================
+   CASE BOARD — Detective persona's middle-canvas view when no file is open.
+   Real findings from analysisResult.issues, presented as a pinned corkboard.
+   =========================================================================== */
+.case-board {
+    height: 100%;
+    overflow-y: auto;
+    padding: 24px;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 18px;
+    background:
+        radial-gradient(circle at 20% 25%, rgba(0, 0, 0, 0.22) 0, transparent 2.5%),
+        radial-gradient(circle at 72% 55%, rgba(0, 0, 0, 0.2) 0, transparent 2.5%),
+        radial-gradient(circle at 45% 80%, rgba(0, 0, 0, 0.2) 0, transparent 2.5%),
+        repeating-linear-gradient(115deg, rgba(0, 0, 0, 0.07) 0px, transparent 2px, transparent 26px, rgba(0, 0, 0, 0.05) 28px),
+        linear-gradient(160deg, #4a3524 0%, #3a2818 55%, #2e1f13 100%);
+}
+
+.case-board__note {
+    position: relative;
+    background: #f3e6c8;
+    color: #2e1f13;
+    font-family: 'Special Elite', var(--lb-font-mono);
+    padding: 16px 18px;
+    border-radius: 2px;
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.45);
+    transform: rotate(-1.2deg);
+    width: 220px;
+    flex-shrink: 0;
+}
+.case-board__note--intro { width: 200px; }
+.case-board__note strong { display: block; font-size: 15px; letter-spacing: 0.04em; margin-bottom: 6px; }
+.case-board__note p { margin: 0; font-size: 12px; line-height: 1.6; opacity: 0.85; }
+
+.case-board__pin {
+    position: absolute; top: -6px; left: 50%; transform: translateX(-50%);
+    width: 11px; height: 11px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #e0574a, #9c1c11);
+    box-shadow: 0 2px 3px rgba(0, 0, 0, 0.6);
+}
+
+.case-board__card {
+    position: relative;
+    width: 230px;
+    flex-shrink: 0;
+    text-align: left;
+    background: #1b2436;
+    color: #d7dee8;
+    border: none;
+    border-left: 3px solid #64748b;
+    border-radius: 3px;
+    padding: 14px 14px 12px;
+    cursor: pointer;
+    font-family: var(--lb-font-body);
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.45);
+    transform: rotate(0.8deg);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.case-board__card:nth-child(even) { transform: rotate(-0.8deg); }
+.case-board__card:hover { transform: rotate(0deg) translateY(-2px); box-shadow: 0 10px 20px rgba(0, 0, 0, 0.5); }
+
+.case-board__card--risk { border-left-color: #ef4763; }
+.case-board__card--circular { border-left-color: #ef4763; }
+.case-board__card--coupled { border-left-color: #45d4e8; }
+.case-board__card--unused { border-left-color: #7c8a9e; }
+
+.case-board__pin-icon {
+    position: absolute; top: -7px; left: -7px;
+    color: #ef4763;
+    transform: rotate(-40deg);
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+.case-board__card-head {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 12.5px; font-weight: 600; color: #f0f4f8;
+    margin-bottom: 8px;
+}
+.case-board__card-head svg { flex: 0 0 auto; opacity: 0.85; }
+
+.case-board__badge {
+    display: inline-block;
+    font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 3px;
+    margin-bottom: 8px;
+}
+.case-board__badge--risk { background: rgba(239, 71, 99, 0.18); color: #ff8fa3; }
+
+.case-board__card p { margin: 0; font-size: 11.5px; line-height: 1.5; color: #aab4c2; }
+.case-board__loop { color: #ef4763; font-weight: 700; }
+
+.case-board__card ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.case-board__card ul li {
+    font-size: 11.5px; font-family: var(--lb-font-mono); color: #aab4c2;
+    padding-left: 12px; position: relative;
+}
+.case-board__card ul li::before { content: '•'; position: absolute; left: 0; color: #64748b; }
+
+.case-board__more { display: block; margin-top: 8px; font-size: 10px; color: #6b7686; }
+.case-board__hint { display: block; margin-top: 8px; font-size: 10.5px; color: #6b7686; font-style: italic; }
+
+/* ===========================================================================
+   MISSION BOARD — Mission Control persona's middle-canvas view when no file
+   is open. Same real findings, framed as a quest list.
+   =========================================================================== */
+.mission-board {
+    height: 100%;
+    overflow-y: auto;
+    padding: 20px;
+    background:
+        repeating-linear-gradient(0deg, rgba(69, 212, 232, 0.05) 0px, transparent 1px, transparent 22px, rgba(69, 212, 232, 0.05) 23px),
+        repeating-linear-gradient(90deg, rgba(69, 212, 232, 0.05) 0px, transparent 1px, transparent 22px, rgba(69, 212, 232, 0.05) 23px),
+        linear-gradient(160deg, #071018 0%, #05141c 60%, #030b11 100%);
+}
+
+.mission-board__hud {
+    display: flex;
+    gap: 12px;
+    padding: 12px 16px;
+    margin-bottom: 18px;
+    border: 1px solid rgba(69, 212, 232, 0.3);
+    border-radius: 3px;
+    background: rgba(69, 212, 232, 0.05);
+    font-family: 'Share Tech Mono', var(--lb-font-mono);
+}
+.mission-board__hud-item { display: flex; flex-direction: column; gap: 3px; flex: 1; }
+.mission-board__hud-item span { font-size: 9px; color: #6fc9d6; letter-spacing: 0.08em; }
+.mission-board__hud-item strong { font-size: 14px; color: #d4f6fb; }
+.mission-board__hud-item--status { flex-direction: row; align-items: center; justify-content: flex-end; gap: 6px; font-size: 11px; color: #4ade80; letter-spacing: 0.05em; }
+.mission-board__live-dot { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; animation: mc-blink 1.6s ease-in-out infinite; }
+
+.mission-board__empty {
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    padding: 40px 20px; text-align: center;
+    color: #6fc9d6; font-family: 'Share Tech Mono', var(--lb-font-mono); font-size: 12px;
+}
+
+.mission-board__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 14px;
+}
+
+.mission-board__card {
+    position: relative;
+    background: rgba(69, 212, 232, 0.04);
+    border: 1px solid rgba(69, 212, 232, 0.3);
+    border-radius: 3px;
+    padding: 14px;
+}
+.mission-board__card::before, .mission-board__card::after {
+    content: ''; position: absolute; width: 10px; height: 10px;
+    border-color: #45d4e8; opacity: 0.7; pointer-events: none;
+}
+.mission-board__card::before { top: 4px; left: 4px; border-top: 1.5px solid; border-left: 1.5px solid; }
+.mission-board__card::after { bottom: 4px; right: 4px; border-bottom: 1.5px solid; border-right: 1.5px solid; }
+
+.mission-board__card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: #45d4e8; }
+.mission-board__diff { font-size: 9px; font-weight: 700; letter-spacing: 0.05em; padding: 2px 7px; border-radius: 3px; font-family: 'Share Tech Mono', var(--lb-font-mono); }
+.mission-board__diff--hard { background: rgba(239, 71, 99, 0.18); color: #ff8fa3; }
+.mission-board__diff--medium { background: rgba(245, 165, 36, 0.18); color: #f5c877; }
+.mission-board__diff--easy { background: rgba(74, 222, 128, 0.18); color: #86efac; }
+
+.mission-board__card h4 { margin: 0 0 8px; font-size: 13px; color: #d4f6fb; font-family: 'Share Tech Mono', var(--lb-font-mono); }
+.mission-board__target {
+    display: flex; align-items: center; gap: 5px;
+    margin: 0 0 12px; font-size: 11px; color: #6fc9d6; font-family: var(--lb-font-mono);
+}
+.mission-board__target svg { flex: 0 0 auto; color: #45d4e8; }
+.mission-board__target em { font-style: normal; color: #4a6873; }
+
+.mission-board__card button {
+    width: 100%;
+    padding: 7px;
+    border-radius: 2px;
+    border: 1px solid #45d4e8;
+    background: rgba(69, 212, 232, 0.12);
+    color: #d4f6fb;
+    font-family: 'Share Tech Mono', var(--lb-font-mono);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+.mission-board__card button:hover { background: rgba(69, 212, 232, 0.22); box-shadow: 0 0 10px rgba(69, 212, 232, 0.4); }

@@ -1,0 +1,568 @@
+.viz-explorer {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    background: var(--lb-bg);
+    color: var(--lb-text);
+    font-family: var(--lb-font-body);
+}
+
+.viz-explorer__body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    gap: 12px;
+    padding: 12px;
+    overflow-x: auto; /* safety net: if content genuinely can't fit, scroll rather than clip off-screen */
+}
+
+/* Sidebar layout (flex column, gap) is now handled by ResizablePanel itself — see components/ResizablePanel.css */
+
+.viz-panel {
+    padding: 16px;
+    background: var(--lb-surface);
+    backdrop-filter: var(--lb-blur);
+    -webkit-backdrop-filter: var(--lb-blur);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-lg);
+}
+
+.viz-panel--compact {
+    padding: 10px 12px;
+    flex-shrink: 0;
+}
+
+.viz-panel--grow {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    padding-bottom: 8px;
+    overflow: hidden;
+}
+
+.viz-panel--grow .folder-tree {
+    flex: 1;
+    overflow-y: auto;
+}
+
+.viz-panel__title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--lb-text-faint);
+    margin: 0 0 14px;
+}
+
+.viz-search {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 10px;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-sm);
+    color: var(--lb-text-faint);
+    flex-shrink: 0;
+}
+
+.viz-search input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--lb-text);
+    font-size: 12px;
+}
+
+.viz-search input::placeholder {
+    color: var(--lb-text-faint);
+}
+
+/* --- Health ring --- */
+.health-ring {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.health-ring svg {
+    flex-shrink: 0;
+}
+
+.health-ring__track {
+    fill: none;
+    stroke: var(--lb-border);
+    stroke-width: 6;
+}
+
+.health-ring__progress {
+    fill: none;
+    stroke-width: 6;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.6s ease;
+}
+
+.health-ring--a .health-ring__progress { stroke: var(--lb-success); filter: drop-shadow(0 0 6px rgba(74, 222, 128, 0.5)); }
+.health-ring--b .health-ring__progress { stroke: var(--lb-accent); filter: drop-shadow(0 0 6px var(--lb-accent-glow)); }
+.health-ring--c .health-ring__progress { stroke: var(--lb-warning); filter: drop-shadow(0 0 6px rgba(240, 180, 41, 0.5)); }
+.health-ring--d .health-ring__progress,
+.health-ring--f .health-ring__progress { stroke: var(--lb-error); filter: drop-shadow(0 0 6px rgba(240, 103, 138, 0.5)); }
+
+.health-ring__label {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 76px;
+    height: 76px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.health-ring__grade {
+    font-family: var(--lb-font-display);
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--lb-text);
+}
+
+.health-ring__meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.health-ring__score {
+    font-size: 12.5px;
+    color: var(--lb-text-muted);
+    font-family: var(--lb-font-mono);
+}
+
+.health-ring__caption {
+    font-size: 10.5px;
+    color: var(--lb-text-faint);
+}
+
+.health-ring--compact {
+    gap: 10px;
+}
+
+/* --- Color By (vertical list, matching CodeFlow) --- */
+.viz-colorby-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.viz-colorby-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 9px;
+    background: transparent;
+    border: none;
+    border-radius: var(--lb-radius-sm);
+    color: var(--lb-text-muted);
+    font-size: 12.5px;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.viz-colorby-row:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--lb-text);
+}
+
+.viz-colorby-row--active {
+    background: rgba(74, 222, 128, 0.12);
+    color: var(--lb-success);
+}
+
+.viz-colorby-row--active svg {
+    color: var(--lb-success);
+}
+
+.viz-colorby-row:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* --- Lines of Code + language bar --- */
+.viz-loc {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 10px;
+}
+
+.viz-loc__value {
+    font-family: var(--lb-font-display);
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--lb-success);
+}
+
+.viz-loc__label {
+    font-size: 10.5px;
+    color: var(--lb-text-faint);
+}
+
+.viz-lang-bar {
+    display: flex;
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 8px;
+}
+
+.viz-lang-bar__segment {
+    height: 100%;
+}
+
+.viz-lang-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+}
+
+.viz-lang-legend__item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10.5px;
+    color: var(--lb-text-muted);
+}
+
+.viz-lang-legend__dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+/* --- Stat grid --- */
+.stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.stat-grid--2col {
+    gap: 6px;
+}
+
+.stat-grid--details {
+    margin-bottom: 18px;
+}
+
+.stat-box {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 11px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--lb-border-soft);
+    border-radius: var(--lb-radius-sm);
+}
+
+.stat-box svg {
+    color: var(--lb-accent);
+    margin-bottom: 2px;
+}
+
+.stat-box__value {
+    font-family: var(--lb-font-display);
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--lb-text);
+    line-height: 1.1;
+}
+
+.stat-box__label {
+    font-size: 10.5px;
+    color: var(--lb-text-faint);
+}
+
+.stat-box--sm {
+    padding: 7px 9px;
+}
+
+.stat-box--sm .stat-box__value {
+    font-size: 15px;
+}
+
+/* --- Graph area --- */
+.viz-explorer__graph {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.graph-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 9px 14px;
+    background: var(--lb-surface);
+    backdrop-filter: var(--lb-blur);
+    -webkit-backdrop-filter: var(--lb-blur);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-md);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    /* backdrop-filter creates its own stacking context, which traps any
+       z-index set on descendants (like the settings popup) *inside* it —
+       without an explicit position+z-index here, that trapped context still
+       paints behind .viz-explorer__graph-canvas below it (later DOM siblings
+       win ties), which is why the settings gear popup was rendering behind
+       the graph canvas instead of on top of it. */
+    position: relative;
+    z-index: 5;
+}
+
+.graph-toolbar__modes {
+    display: flex;
+    gap: 4px;
+}
+
+.graph-toolbar__viz-select {
+    padding: 6px 8px;
+    background: var(--lb-surface-solid);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-sm);
+    color: var(--lb-text);
+    font-size: 11.5px;
+    font-family: var(--lb-font-body);
+    cursor: pointer;
+}
+
+.graph-toolbar__viz-select:focus {
+    outline: 1px solid var(--lb-accent);
+}
+
+.graph-toolbar__mode-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: transparent;
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-sm);
+    color: var(--lb-text-muted);
+    font-size: 11.5px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.graph-toolbar__mode-btn:hover {
+    color: var(--lb-text);
+}
+
+.graph-toolbar__mode-btn--active {
+    background: var(--lb-accent-dim);
+    border-color: rgba(139, 92, 246, 0.4);
+    color: var(--lb-accent);
+}
+
+.graph-toolbar__title {
+    font-family: var(--lb-font-mono);
+    font-size: 11.5px;
+    color: var(--lb-text-faint);
+}
+
+.graph-toolbar__toggle {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--lb-text-muted);
+    cursor: pointer;
+    user-select: none;
+}
+
+.graph-toolbar__toggle input {
+    accent-color: var(--lb-accent);
+}
+
+.graph-toolbar__actions {
+    display: flex;
+    gap: 4px;
+    margin-left: auto;
+}
+
+.graph-toolbar__actions button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    background: transparent;
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-sm);
+    color: var(--lb-text-muted);
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.graph-toolbar__actions button:hover {
+    border-color: var(--lb-accent);
+    color: var(--lb-accent);
+}
+
+.viz-explorer__graph-canvas {
+    flex: 1;
+    min-height: 0;
+    background: var(--lb-surface);
+    backdrop-filter: var(--lb-blur);
+    -webkit-backdrop-filter: var(--lb-blur);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-lg);
+    overflow: hidden;
+    position: relative;
+    z-index: 1;
+}
+
+/* --- Details panel --- */
+.viz-explorer__details {
+    flex: 1;
+    height: 100%;
+    min-height: 0;
+    background: var(--lb-surface);
+    backdrop-filter: var(--lb-blur);
+    -webkit-backdrop-filter: var(--lb-blur);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-lg);
+    padding: 18px 16px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.viz-details__empty {
+    color: var(--lb-text-faint);
+    font-size: 13px;
+    line-height: 1.5;
+    margin-top: 20px;
+    text-align: center;
+}
+
+.viz-details__header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.viz-details__icon-badge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border-radius: var(--lb-radius-sm);
+    background: var(--lb-accent-dim);
+    color: var(--lb-accent);
+    flex-shrink: 0;
+}
+
+.viz-details__path {
+    font-family: var(--lb-font-body);
+    font-size: 14.5px;
+    font-weight: 700;
+    color: var(--lb-text);
+    margin: 0;
+}
+
+.viz-details__fullpath {
+    font-family: var(--lb-font-mono);
+    font-size: 10.5px;
+    color: var(--lb-text-faint);
+    word-break: break-all;
+    margin: 2px 0 0;
+}
+
+.viz-details__section {
+    margin-bottom: 16px;
+}
+
+.viz-details__section h4 {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--lb-text-faint);
+    margin: 0 0 8px;
+}
+
+.viz-details__section ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.viz-details__section li {
+    font-family: var(--lb-font-mono);
+    font-size: 12px;
+    color: var(--lb-text);
+}
+
+.viz-details__annotations {
+    color: var(--lb-accent);
+    font-size: 11px;
+}
+
+.viz-details__more {
+    color: var(--lb-text-faint) !important;
+}
+
+.viz-details__link {
+    cursor: pointer;
+    color: var(--lb-text-muted) !important;
+    transition: color 0.15s ease;
+}
+
+.viz-details__link:hover {
+    color: var(--lb-accent) !important;
+    text-decoration: underline;
+}
+
+.viz-details__actions {
+    margin-top: auto;
+    padding-top: 12px;
+}
+
+.viz-details__ai-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 12px;
+    background: var(--lb-accent-gradient);
+    border: none;
+    border-radius: var(--lb-radius-md);
+    color: #fff;
+    font-size: 13.5px;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: var(--lb-glow-purple);
+    transition: transform 0.1s ease;
+}
+
+.viz-details__ai-btn:hover {
+    transform: translateY(-1px);
+}

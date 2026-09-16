@@ -1,0 +1,121 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+
+/* Custom scrollbars — match the dark theme everywhere instead of the
+   browser's default (often white/light) scrollbar. Covers every scrollable
+   panel (repo panel, details sidebar, graph area, etc.) from one place. */
+* {
+    scrollbar-width: thin; /* Firefox */
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent; /* Firefox: thumb, track */
+}
+
+*::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.16);
+    border-radius: 8px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.28);
+}
+/**
+ * Global design tokens — premium dark + purple glassmorphism theme.
+ * Loaded once (see main.jsx) so every page/component shares the same palette.
+ * Keeping the same --lb-* variable names as before means no component CSS
+ * needed structural changes, only re-theming.
+ */
+:root {
+    /* Base surfaces */
+    --lb-bg: #0a0a10;
+    --lb-bg-elevated: #0d0d16;
+    --lb-surface: rgba(255, 255, 255, 0.035);
+    --lb-surface-raised: rgba(255, 255, 255, 0.06);
+    --lb-surface-solid: #14141f;
+    --lb-border: rgba(255, 255, 255, 0.09);
+    --lb-border-soft: rgba(255, 255, 255, 0.05);
+
+    /* Text */
+    --lb-text: #f1f0f7;
+    --lb-text-muted: #a4a1b8;
+    --lb-text-faint: #6b6880;
+
+    /* Purple accent system */
+    --lb-accent: #8b5cf6;
+    --lb-accent-hover: #9d70ff;
+    --lb-accent-dim: rgba(139, 92, 246, 0.16);
+    --lb-accent-glow: rgba(139, 92, 246, 0.35);
+    --lb-accent-gradient: linear-gradient(135deg, #9d70ff 0%, #7c3aed 100%);
+
+    /* Secondary accent (AI Explorer / info actions) */
+    --lb-accent2: #6366f1;
+    --lb-accent2-gradient: linear-gradient(135deg, #818cf8 0%, #6366f1 100%);
+    --lb-accent2-dim: rgba(99, 102, 241, 0.16);
+
+    /* Status colors */
+    --lb-warning: #f0b429;
+    --lb-error: #f0678a;
+    --lb-error-dim: rgba(240, 103, 138, 0.14);
+    --lb-success: #4ade80;
+
+    /* Fonts */
+    --lb-font-display: 'IBM Plex Mono', monospace;
+    --lb-font-body: 'Inter', sans-serif;
+    --lb-font-mono: 'JetBrains Mono', monospace;
+
+    /* Shape + elevation */
+    --lb-radius-sm: 8px;
+    --lb-radius-md: 12px;
+    --lb-radius-lg: 18px;
+    --lb-radius-xl: 22px;
+    --lb-blur: blur(24px);
+    --lb-shadow-soft: 0 8px 30px -8px rgba(0, 0, 0, 0.5);
+    --lb-shadow-elevated: 0 20px 60px -16px rgba(0, 0, 0, 0.65);
+    --lb-glow-purple: 0 0 0 1px rgba(139, 92, 246, 0.25), 0 8px 32px -4px rgba(139, 92, 246, 0.35);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+/*
+ * Global reset — without this, the browser's default body margin (8px)
+ * causes visible gaps/misalignment at the viewport edges, and with no
+ * explicit background color, the default white briefly shows through
+ * before React paints (a "flash") and behind/around any element that's
+ * slightly taller or narrower than expected. This is the root cause of
+ * the "white background bleeding" / "white corners" / "background
+ * flashes" issues.
+ */
+html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--lb-bg);
+    /* Safety net against stray horizontal overflow from any single element
+       (e.g. a fixed-width child slightly wider than its container) causing
+       an unexpected page-level scrollbar. Individual scrollable regions
+       (graph canvases, panel lists, etc.) still scroll internally as normal. */
+    overflow-x: hidden;
+}
+
+#root {
+    min-height: 100vh;
+    background: var(--lb-bg);
+}
+
+/** Reusable glass-card look — apply alongside a component's own class. */
+.lb-glass {
+    background: var(--lb-surface);
+    backdrop-filter: var(--lb-blur);
+    -webkit-backdrop-filter: var(--lb-blur);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-lg);
+    box-shadow: var(--lb-shadow-soft);
+}

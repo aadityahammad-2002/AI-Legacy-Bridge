@@ -1,0 +1,147 @@
+.alt-viz {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+.alt-viz__svg {
+    display: block;
+    cursor: grab;
+}
+
+.alt-viz__svg:active {
+    cursor: grabbing;
+}
+
+.alt-viz__label {
+    font-family: var(--lb-font-mono);
+    font-size: 10.5px;
+    fill: var(--lb-text-muted);
+    pointer-events: none;
+    user-select: none;
+}
+
+.alt-viz__cell rect {
+    transition: opacity 0.15s ease;
+}
+
+.alt-viz__cell:hover rect {
+    opacity: 1 !important;
+}
+
+.alt-viz__link {
+    fill: none;
+    stroke: var(--lb-border);
+    stroke-width: 1.2px;
+}
+
+.alt-viz__node circle {
+    transition: r 0.1s ease;
+}
+
+.alt-viz__node:hover circle {
+    r: 6;
+}
+
+.alt-viz__matrix-bg {
+    fill: rgba(255, 255, 255, 0.03);
+    stroke: var(--lb-border-soft);
+    stroke-width: 0.5px;
+}
+
+.alt-viz__matrix-cell {
+    transition: opacity 0.1s ease;
+}
+
+.alt-viz__matrix-cell:hover {
+    opacity: 0.8;
+}
+
+.alt-viz__row-label,
+.alt-viz__col-label {
+    font-size: 9px;
+}
+
+.alt-viz__bundle-link {
+    fill: none;
+    stroke-width: 1px;
+    transition: opacity 0.15s ease, stroke 0.15s ease;
+}
+
+.alt-viz__bundle-node circle {
+    stroke: var(--lb-bg);
+    stroke-width: 1.5px;
+}
+
+.alt-viz__flow-link {
+    transition: opacity 0.15s ease;
+}
+
+.alt-viz__flow-link:hover {
+    opacity: 0.85 !important;
+}
+
+/* --- Subway Map / Galaxy Map (shared node/label styling) --- */
+.sg__label {
+    font-family: var(--lb-font-mono);
+    font-size: 10px;
+    fill: var(--lb-text-muted);
+    pointer-events: none;
+    user-select: none;
+    paint-order: stroke;
+    stroke: var(--lb-bg);
+    stroke-width: 3px;
+    stroke-linejoin: round;
+}
+
+/* --- Galaxy Map --- */
+.sg-galaxy__link { stroke: var(--lb-border); stroke-width: 0.6px; opacity: 0.5; transition: opacity 0.35s ease; }
+.sg-galaxy__bundle { fill: none; stroke: var(--lb-accent); opacity: 0.28; }
+.sg-galaxy__nebula { pointer-events: none; }
+.sg-galaxy__halo { opacity: 0.35; filter: blur(4px); pointer-events: none; animation: sg-pulse 3.6s ease-in-out infinite; }
+.sg-galaxy__stars .sg-node { transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.4s ease; cursor: pointer; }
+.sg-galaxy__stars .sg-node:hover .sg-galaxy__star { transform: scale(1.8); }
+.sg-galaxy__stars .sg-node:hover .sg-galaxy__halo { transform: scale(1.5); opacity: 0.55; }
+.sg-galaxy__star, .sg-galaxy__halo { transform-box: fill-box; transform-origin: center; transition: transform 0.15s ease, opacity 0.15s ease; }
+.sg-galaxy__cluster-label {
+    font-family: var(--lb-font-display); font-size: 14px; font-weight: 700; letter-spacing: 0.03em;
+    paint-order: stroke; stroke: var(--lb-bg); stroke-width: 4px; stroke-linejoin: round;
+}
+.sg-node.sg-node--selected .sg-galaxy__star { stroke: #fff; stroke-width: 2px; }
+.sg-galaxy__circular-loop { fill: none; stroke: var(--lb-error); stroke-width: 1.4px; opacity: 0.85; }
+.sg-galaxy__circular-dot { fill: var(--lb-error); filter: drop-shadow(0 0 4px var(--lb-error)); animation: sg-pulse 1.8s ease-in-out infinite; }
+.sg-galaxy__circular-label {
+    font-family: var(--lb-font-mono); font-size: 10px; fill: var(--lb-error); font-weight: 600;
+    paint-order: stroke; stroke: var(--lb-bg); stroke-width: 3px; stroke-linejoin: round;
+}
+
+@keyframes sg-pulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.65; }
+}
+
+/* --- Subway Map --- */
+.sg-subway__hub { fill: var(--lb-accent); filter: drop-shadow(0 0 8px var(--lb-accent-glow)); }
+.sg-subway__hub-label {
+    font-family: var(--lb-font-display); font-size: 11px; fill: var(--lb-text-muted); text-anchor: middle;
+    paint-order: stroke; stroke: var(--lb-bg); stroke-width: 3px; stroke-linejoin: round;
+}
+.sg-subway__line { fill: none; stroke-width: 4px; opacity: 0.9; stroke-linejoin: round; stroke-linecap: round; }
+.sg-subway__twig { fill: none; stroke-width: 1.4px; opacity: 0.5; }
+.sg-subway__branch-label {
+    font-family: var(--lb-font-display); font-size: 12.5px; font-weight: 700; text-anchor: middle;
+    paint-order: stroke; stroke: var(--lb-bg); stroke-width: 4px; stroke-linejoin: round;
+}
+.sg-subway__stop { stroke: var(--lb-bg); stroke-width: 2px; transition: transform 0.15s ease; transform-box: fill-box; transform-origin: center; }
+.sg-subway__stop-label {
+    font-family: var(--lb-font-mono); font-size: 10px; fill: var(--lb-text-muted); text-anchor: middle;
+    paint-order: stroke; stroke: var(--lb-bg); stroke-width: 3px; stroke-linejoin: round;
+}
+.sg-subway__station { stroke-width: 2px; transform-box: fill-box; transform-origin: center; transition: transform 0.15s ease; cursor: pointer; }
+.sg-subway__station--interchange { stroke-width: 2.5px; }
+.sg-node:hover .sg-subway__station { transform: scale(1.7); }
+.sg-node.sg-node--selected .sg-subway__station { stroke: #fff; }
+.sg-subway__circular-loop { fill: none; stroke: var(--lb-error); stroke-width: 1.4px; stroke-dasharray: 3 3; opacity: 0.8; }
+.sg-subway__unused-title { font-family: var(--lb-font-display); font-size: 10px; fill: var(--lb-text-faint); text-transform: uppercase; letter-spacing: 0.05em; }
+.sg-subway__unused-dot { fill: var(--lb-text-faint); opacity: 0.6; }
+.sg-subway__unused-label { font-family: var(--lb-font-mono); font-size: 10px; fill: var(--lb-text-faint); }

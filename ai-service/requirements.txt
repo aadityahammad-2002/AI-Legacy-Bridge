@@ -1,0 +1,29 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.12.5
+psycopg2-binary==2.9.10
+pgvector==0.3.6
+httpx==0.28.1
+
+# Agent framework
+langchain==1.4.0
+langchain-core==1.6.2
+langchain-openai==1.6.0
+langgraph==1.2.11
+langgraph-checkpoint==4.2.0
+
+# Graph DB (GraphRAG)
+neo4j==6.3.0
+
+# Real semantic embeddings (downloads all-MiniLM-L6-v2, ~90MB, on first use —
+# see embedding.py). Heavy (pulls in torch); if you only want the
+# zero-dependency hashing fallback, you can omit this line and set
+# LEGACYBRIDGE_EMBEDDING_PROVIDER=hashing.
+onnxruntime==1.24.4
+tokenizers==0.23.2
+numpy>=1.26
+sentence-transformers==6.0.1
+
+# Gemini native client (needed because Gemini's OpenAI-compat endpoint
+# breaks the agent<->tools loop — see agent_graph.py's _make_llm comment)
+langchain-google-genai==4.4.0

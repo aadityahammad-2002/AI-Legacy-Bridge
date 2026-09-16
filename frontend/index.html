@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Legacy Bridge</title>
+    <style>
+      /* First-paint fallback only — theme.css (loaded via main.jsx) is the
+         real source of truth and overrides this immediately. This exists
+         purely so there's no white flash before that CSS applies, since in
+         dev mode Vite injects stylesheets via JS rather than a blocking
+         <link>. See Task 4 / theme.css's global reset for the full fix. */
+      html, body { margin: 0; padding: 0; background: #0a0a10; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

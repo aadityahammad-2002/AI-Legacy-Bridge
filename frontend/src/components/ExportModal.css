@@ -1,0 +1,113 @@
+.export-modal__overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+}
+
+.export-modal {
+    width: 420px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--lb-bg);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-lg);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.export-modal__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--lb-border);
+    flex-shrink: 0;
+}
+
+.export-modal__header h3 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--lb-text);
+}
+
+.export-modal__close {
+    background: transparent;
+    border: none;
+    color: var(--lb-text-faint);
+    cursor: pointer;
+    display: flex;
+}
+
+.export-modal__close:hover {
+    color: var(--lb-text);
+}
+
+.export-modal__body {
+    overflow-y: auto;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.export-modal__section h4 {
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--lb-text-faint);
+    margin: 0 0 4px;
+}
+
+.export-modal__section-desc {
+    font-size: 11.5px;
+    color: var(--lb-text-muted);
+    margin: 0 0 10px;
+    line-height: 1.4;
+}
+
+.export-modal__grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.export-modal__item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 20px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-md);
+    color: var(--lb-success);
+    font-size: 12.5px;
+    font-family: var(--lb-font-mono);
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.export-modal__item:hover:not(:disabled) {
+    border-color: var(--lb-success);
+    background: rgba(74, 222, 128, 0.08);
+}
+
+.export-modal__item:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.export-modal__item span {
+    color: var(--lb-text);
+}

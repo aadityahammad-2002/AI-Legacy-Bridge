@@ -1,0 +1,39 @@
+.folder-tree {
+    font-family: var(--lb-font-mono);
+    font-size: 12.5px;
+    overflow-y: auto;
+}
+
+.folder-tree__row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    color: var(--lb-text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+    border-radius: 6px;
+    margin: 0 4px;
+}
+
+.folder-tree__row:hover {
+    background: var(--lb-surface-raised);
+    color: var(--lb-text);
+}
+
+.folder-tree__row--dir svg:first-child {
+    color: var(--lb-text-faint);
+}
+
+.folder-tree__row--file svg {
+    color: var(--lb-text-faint);
+}
+
+.folder-tree__row--selected {
+    background: var(--lb-accent-dim);
+    color: var(--lb-accent);
+}
+
+.folder-tree__row--selected svg {
+    color: var(--lb-accent);
+}
