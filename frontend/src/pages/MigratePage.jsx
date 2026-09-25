@@ -43,6 +43,9 @@ const CATEGORY_META = {
  */
 export default function MigratePage({ analysisResult, activeWorkspace, repositoryId, onNavigate, onExitRepository }) {
     const files = analysisResult?.files || [];
+    const migrationRisk = analysisResult?.migrationRisk || {};
+    const migrationOrder = analysisResult?.migrationOrder || { order: [], totalBatches: 0 };
+    const safeToTouch = analysisResult?.safeToTouch || {};
 
     const [findings, setFindings] = useState([]);
     const [planStatus, setPlanStatus] = useState('idle'); // idle | scanning | done
@@ -151,6 +154,14 @@ export default function MigratePage({ analysisResult, activeWorkspace, repositor
         list = [...list].sort((a, b) => (sortDesc ? sevRank[b.severity] - sevRank[a.severity] : sevRank[a.severity] - sevRank[b.severity]));
         return list;
     }, [findings, selectedFilePath, activeCategory, sortDesc]);
+
+    // Real: computed by analysis-engine/migrate.js from blast radius +
+    // complexity + security findings (see migrationRisk[path].confidenceReason).
+    const topRiskFiles = useMemo(() => {
+        return Object.entries(migrationRisk)
+            .sort((a, b) => b[1].score - a[1].score)
+            .slice(0, 8);
+    }, [migrationRisk]);
 
     return (
         <div className="migrate-page">
@@ -268,6 +279,62 @@ export default function MigratePage({ analysisResult, activeWorkspace, repositor
                                 </div>
                             </div>
 
+                            {topRiskFiles.length > 0 && (
+                                <div className="migrate-order">
+                                    <div className="migrate-order__header">
+                                        <ShieldAlert size={16} strokeWidth={2} />
+                                        <div>
+                                            <h3>File Migration Risk (real)</h3>
+                                            <p>Computed from blast radius, complexity, and known security findings — not part of the AI-generated findings above.</p>
+                                        </div>
+                                    </div>
+                                    <div className="migrate-risk-list">
+                                        {topRiskFiles.map(([path, r]) => (
+                                            <div className={`migrate-risk-row migrate-risk-row--${r.level}`} key={path}>
+                                                <span className="migrate-risk-row__file">{path}</span>
+                                                <span className={`migrate-risk-badge migrate-risk-badge--${r.level}`}>{r.level} · {r.score}/100</span>
+                                                <span className="migrate-risk-row__meta">
+                                                    {r.factors.dependents} dependent(s){safeToTouch[path] ? ` · ${safeToTouch[path].badge}` : ''}
+                                                </span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {migrationOrder.order.length > 0 && (
+                                <div className="migrate-order">
+                                    <div className="migrate-order__header">
+                                        <ListOrdered size={16} strokeWidth={2} />
+                                        <div>
+                                            <h3>Dependency-Safe Migration Order (real)</h3>
+                                            <p>
+                                                Topological order over the dependency graph — batch 1 has nothing left depending on it.
+                                                {migrationOrder.confidence === 'UNCERTAIN' && ' Some files are in a circular dependency and are grouped rather than strictly ordered.'}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="migrate-batch-list">
+                                        {Array.from({ length: migrationOrder.totalBatches }, (_, i) => i + 1).map((batchNum) => {
+                                            const filesInBatch = migrationOrder.order.filter((o) => o.batch === batchNum);
+                                            if (!filesInBatch.length) return null;
+                                            const hasCycle = filesInBatch.some((f) => f.inCycle);
+                                            return (
+                                                <div className={`migrate-batch${hasCycle ? ' migrate-batch--cycle' : ''}`} key={batchNum}>
+                                                    <div className="migrate-batch__label">
+                                                        Batch {batchNum}{hasCycle ? ' — circular, migrate together' : ''}
+                                                    </div>
+                                                    <div className="migrate-batch__files">
+                                                        {filesInBatch.map((f) => (
+                                                            <code key={f.file}>{f.file}</code>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
                             {totalFindings > 0 && (
                                 <div className="migrate-order">
                                     <div className="migrate-order__header">

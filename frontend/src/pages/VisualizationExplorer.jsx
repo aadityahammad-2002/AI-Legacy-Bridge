@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import {
     Activity,
     Maximize2, LocateFixed, RotateCcw, ZoomIn, ZoomOut, Network, Folder as FolderIcon,
-    Search, Layers, Upload,
+    Search, Layers, Upload, Component,
 } from 'lucide-react';
 
 import TopNavBar from '../components/TopNavBar.jsx';
@@ -93,7 +93,7 @@ export default function VisualizationExplorer({
     useEffect(() => { localStorage.setItem('viz-explorer:vizType', vizType); }, [vizType]);
     const [selectedFolder, setSelectedFolder] = useState(null);
     const [sidebarSearch, setSidebarSearch] = useState('');
-    const [colorBy, setColorBy] = useState('folder'); // 'folder' | 'layer' | 'churn' — only meaningful in dependency mode
+    const [colorBy, setColorBy] = useState('folder'); // 'folder' | 'layer' | 'churn' | 'role' — only meaningful in dependency mode
     const graphCanvasRef = useRef(null);
 
     const { files, classes, functions, dependencies, graph, healthScore, securityIssues } = analysisResult;
@@ -110,14 +110,25 @@ export default function VisualizationExplorer({
         return map;
     }, [files]);
 
+    // Real: analysis-engine/roles.js classifies each file's architectural
+    // role (Controller/Service/Repository/etc.) from framework annotations
+    // or naming convention — folder-independent, unlike "Folder" colorBy.
+    const roleByPath = useMemo(() => {
+        const map = new Map();
+        const roles = analysisResult.roles || {};
+        Object.entries(roles).forEach(([path, r]) => map.set(path, r.role || 'Other'));
+        return map;
+    }, [analysisResult.roles]);
+
     const churnAvailable = useMemo(() => files.some((f) => (f.churn || 0) > 0), [files]);
 
     const colorKeyFn = useMemo(() => {
         if (graphMode !== 'dependency') return undefined; // undefined = GraphCanvas's default (by folder)
         if (colorBy === 'layer') return (node) => layerByPath.get(node.id) || 'other';
+        if (colorBy === 'role') return (node) => roleByPath.get(node.id) || 'Other';
         if (colorBy === 'churn') return undefined; // churn uses a severity ramp, not a hashed palette — see churnKeyFn below
         return undefined; // 'folder' — GraphCanvas's built-in default
-    }, [graphMode, colorBy, layerByPath]);
+    }, [graphMode, colorBy, layerByPath, roleByPath]);
 
     const churnByPath = useMemo(() => {
         const map = new Map();
@@ -190,24 +201,36 @@ export default function VisualizationExplorer({
                     {graphMode === 'dependency' && (
                         <section className="viz-panel viz-panel--compact">
                             <h3 className="viz-panel__title">Color By</h3>
+                            {vizType !== 'graph' && (
+                                <p className="viz-colorby-hint">Only affects the <strong>Dependency Graph</strong> view — picking one switches you there.</p>
+                            )}
                             <div className="viz-colorby-list">
                                 <button
                                     className={`viz-colorby-row${colorBy === 'folder' ? ' viz-colorby-row--active' : ''}`}
-                                    onClick={() => setColorBy('folder')}
+                                    onClick={() => { setColorBy('folder'); setVizType('graph'); }}
                                 >
                                     <FolderIcon size={13} strokeWidth={1.8} />
                                     Folder
                                 </button>
                                 <button
                                     className={`viz-colorby-row${colorBy === 'layer' ? ' viz-colorby-row--active' : ''}`}
-                                    onClick={() => setColorBy('layer')}
+                                    onClick={() => { setColorBy('layer'); setVizType('graph'); }}
                                 >
                                     <Layers size={13} strokeWidth={1.8} />
                                     Layer
                                 </button>
                                 <button
+                                    className={`viz-colorby-row${colorBy === 'role' ? ' viz-colorby-row--active' : ''}`}
+                                    onClick={() => { setColorBy('role'); setVizType('graph'); }}
+                                    disabled={!analysisResult.roles || Object.keys(analysisResult.roles).length === 0}
+                                    title="Controller/Service/Repository/etc. — detected from framework annotations or naming convention, folder-independent"
+                                >
+                                    <Component size={13} strokeWidth={1.8} />
+                                    Role
+                                </button>
+                                <button
                                     className={`viz-colorby-row${colorBy === 'churn' ? ' viz-colorby-row--active' : ''}`}
-                                    onClick={() => setColorBy('churn')}
+                                    onClick={() => { setColorBy('churn'); setVizType('graph'); }}
                                     disabled={!churnAvailable}
                                     title={churnAvailable ? undefined : 'Churn needs commit history — only available for GitHub-sourced repositories'}
                                 >

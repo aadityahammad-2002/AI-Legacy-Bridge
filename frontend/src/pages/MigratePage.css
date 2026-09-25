@@ -393,6 +393,77 @@
     gap: 14px;
 }
 
+.migrate-risk-list, .migrate-batch-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.migrate-risk-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--lb-radius-md, 8px);
+    background: var(--lb-surface-2, rgba(255,255,255,0.03));
+    border: 1px solid var(--lb-border-soft);
+    flex-wrap: wrap;
+}
+
+.migrate-risk-row__file {
+    font-family: var(--lb-font-mono, monospace);
+    font-size: 12px;
+    color: var(--lb-text);
+    flex: 1 1 auto;
+    word-break: break-all;
+}
+
+.migrate-risk-row__meta {
+    font-size: 11px;
+    color: var(--lb-text-muted);
+}
+
+.migrate-risk-badge {
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 3px 8px;
+    border-radius: 5px;
+    white-space: nowrap;
+}
+.migrate-risk-badge--critical { color: #ff6b6b; background: rgba(255,107,107,0.12); border: 1px solid rgba(255,107,107,0.3); }
+.migrate-risk-badge--high { color: #f0a441; background: rgba(240,164,65,0.12); border: 1px solid rgba(240,164,65,0.3); }
+.migrate-risk-badge--medium { color: var(--lb-warning, #f0b429); background: rgba(240,180,41,0.12); border: 1px solid rgba(240,180,41,0.3); }
+.migrate-risk-badge--low { color: var(--lb-success, #4ade80); background: rgba(74,222,128,0.1); border: 1px solid rgba(74,222,128,0.3); }
+
+.migrate-batch {
+    border: 1px solid var(--lb-border-soft);
+    border-radius: var(--lb-radius-md, 8px);
+    padding: 10px 12px;
+}
+.migrate-batch--cycle {
+    border-color: rgba(255,107,107,0.4);
+    background: rgba(255,107,107,0.06);
+}
+.migrate-batch__label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--lb-text);
+    margin-bottom: 6px;
+}
+.migrate-batch__files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.migrate-batch__files code {
+    font-size: 11px;
+    padding: 2px 6px;
+    background: var(--lb-surface-2, rgba(255,255,255,0.05));
+    border-radius: 4px;
+}
+
 .migrate-order__step-wrap {
     display: flex;
     align-items: center;

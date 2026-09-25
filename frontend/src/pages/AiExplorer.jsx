@@ -324,8 +324,8 @@ export default function AiExplorer({ repositoryId, analysisResult, focusedContex
                         </div>
                     )}
 
-                    {personaId === 'detective' && <DetectiveSidePanels analysisResult={analysisResult} />}
-                    {personaId === 'missionControl' && <MissionControlSidePanels analysisResult={analysisResult} />}
+                    {personaId === 'detective' && <DetectiveSidePanels analysisResult={analysisResult} onAsk={handleSend} onOpenFile={openFile} />}
+                    {personaId === 'missionControl' && <MissionControlSidePanels analysisResult={analysisResult} onAsk={handleSend} onOpenFile={openFile} />}
                 </ResizablePanel>
 
                 <main className="ai-explorer__editor">

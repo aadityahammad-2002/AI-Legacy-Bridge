@@ -73,8 +73,11 @@ export default function RepositoryPanel({ analysisResult, selectedPath, onSelect
                 if (!usesByFile.has(c.target)) usesByFile.set(c.target, new Set());
                 usesByFile.get(c.target).add(c.fn);
             });
-        return { file, blast, fileFunctions, uses: [...usesByFile.entries()].map(([path, fns]) => ({ path, fnCount: fns.size })) };
-    }, [selectedPath, files, functions, connections]);
+        return { file, blast, fileFunctions, uses: [...usesByFile.entries()].map(([path, fns]) => ({ path, fnCount: fns.size })),
+            role: analysisResult.roles?.[selectedPath] || null,
+            safeToTouch: analysisResult.safeToTouch?.[selectedPath] || null,
+            migrationRisk: analysisResult.migrationRisk?.[selectedPath] || null };
+    }, [selectedPath, files, functions, connections, analysisResult.roles, analysisResult.safeToTouch, analysisResult.migrationRisk]);
 
     return (
         <div className="repo-panel">
@@ -260,7 +263,7 @@ export default function RepositoryPanel({ analysisResult, selectedPath, onSelect
 }
 
 function FileDetailView({ detail, fnStats, onBack, onSelectFile, onViewSource, onOpenAiExplorerFocused, connectionsOpen, setConnectionsOpen, functionsOpen, setFunctionsOpen, expandedFn, setExpandedFn }) {
-    const { file, blast, fileFunctions, uses } = detail;
+    const { file, blast, fileFunctions, uses, role, safeToTouch, migrationRisk } = detail;
     const levelLabel = blast.level.toUpperCase();
 
     function openAiExplorer() {
@@ -283,6 +286,23 @@ function FileDetailView({ detail, fnStats, onBack, onSelectFile, onViewSource, o
                         {file.path.split('/').slice(0, -1).join('/') || '(root)'} · {file.loc} lines
                         {file.complexity ? ` · Complexity: ${file.complexity.score}` : ''}
                     </div>
+                    {(role || safeToTouch) && (
+                        <div className="repo-panel__file-badges">
+                            {role && role.role !== 'Other' && (
+                                <span className="repo-panel__role-badge" title={role.reason}>{role.role}</span>
+                            )}
+                            {safeToTouch && (
+                                <span className={`repo-panel__safe-badge repo-panel__safe-badge--${safeToTouch.level}`} title={safeToTouch.confidenceReason}>
+                                    {safeToTouch.badge}
+                                </span>
+                            )}
+                            {migrationRisk && migrationRisk.level !== 'low' && (
+                                <span className={`repo-panel__risk-badge repo-panel__risk-badge--${migrationRisk.level}`} title="Migration risk — see Migrate page for detail">
+                                    Migration risk: {migrationRisk.level}
+                                </span>
+                            )}
+                        </div>
+                    )}
                 </div>
                 <button className="repo-panel__view-source-btn" onClick={() => onViewSource(file.path)}>
                     <Eye size={13} strokeWidth={1.8} /> View Source

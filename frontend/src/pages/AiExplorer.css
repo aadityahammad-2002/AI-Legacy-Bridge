@@ -305,6 +305,49 @@
 }
 .ai-explorer__persona-panel h4:not(:first-child) { margin-top: 14px; }
 
+.ai-explorer__entry-points h4 { margin-top: 0; }
+.ai-explorer__entry-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.ai-explorer__entry-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.ai-explorer__entry-file {
+    flex: 1 1 auto;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--lb-text);
+    font-size: 11.5px;
+    font-family: var(--lb-font-mono);
+    padding: 3px 6px;
+    border-radius: 5px;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ai-explorer__entry-file:hover { background: var(--lb-surface-2, rgba(255,255,255,0.05)); }
+.ai-explorer__entry-ask {
+    flex: 0 0 auto;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 5px;
+    background: rgba(99, 102, 241, 0.15);
+    color: var(--lb-accent2);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    cursor: pointer;
+}
+.ai-explorer__entry-ask:hover { background: rgba(99, 102, 241, 0.25); }
+
 .ai-explorer__legend { display: flex; flex-direction: column; gap: 5px; }
 .ai-explorer__legend-row {
     display: flex; align-items: center; gap: 7px;

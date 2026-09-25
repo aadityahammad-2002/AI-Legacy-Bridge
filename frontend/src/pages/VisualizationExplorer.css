@@ -154,6 +154,13 @@
 }
 
 /* --- Color By (vertical list, matching CodeFlow) --- */
+.viz-colorby-hint {
+    font-size: 10.5px;
+    color: var(--lb-text-muted);
+    margin: -2px 0 8px;
+    line-height: 1.4;
+}
+
 .viz-colorby-list {
     display: flex;
     flex-direction: column;

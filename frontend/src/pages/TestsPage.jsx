@@ -353,7 +353,7 @@ export default function TestsPage({ analysisResult, activeWorkspace, repositoryI
             )}
 
             {activeTab === 'feature' && <FeatureTestsTab onNavigate={onNavigate} />}
-            {activeTab === 'api' && <ApiTestsTab repositoryId={repositoryId} />}
+            {activeTab === 'api' && <ApiTestsTab repositoryId={repositoryId} apiEndpoints={analysisResult?.apiEndpoints} postmanCollection={analysisResult?.postmanCollection} authCoverage={analysisResult?.authCoverage} />}
         </div>
     );
 }
@@ -530,8 +530,9 @@ const API_ENDPOINTS = [
     { id: 'ep5', method: 'POST', path: '/api/code/suggest-migration', description: 'Reviews a file for legacy patterns', real: false },
 ];
 
-function ApiTestsTab() {
+function ApiTestsTab({ repositoryId, apiEndpoints = [], postmanCollection = null, authCoverage = null }) {
     const [results, setResults] = useState({}); // id -> { status, code, time }
+    const [copiedFor, setCopiedFor] = useState(null);
 
     const send = async (ep) => {
         setResults((r) => ({ ...r, [ep.id]: { status: 'sending' } }));
@@ -557,10 +558,73 @@ function ApiTestsTab() {
         }, 500);
     };
 
+    const copyCurl = (ep) => {
+        navigator.clipboard?.writeText(ep.curl || '').catch(() => {});
+        setCopiedFor(`${ep.method}:${ep.path}:${ep.line}`);
+        setTimeout(() => setCopiedFor(null), 1500);
+    };
+
+    const downloadPostman = () => {
+        if (!postmanCollection) return;
+        const blob = new Blob([JSON.stringify(postmanCollection, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'discovered-api.postman_collection.json';
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
     return (
         <main className="tests-content tests-content--api">
+            {/* Real: endpoints discovered by parsing this repository's own source
+                (Spring/Flask/FastAPI/Express route decorators) — see analysis-engine/api.js.
+                Auth-protected is a nearby-code heuristic, not a guarantee. */}
+            <section className="api-discovered-section">
+                <div className="tests-page-header-row">
+                    <h3>Discovered API Endpoints ({apiEndpoints.length})</h3>
+                    {postmanCollection && apiEndpoints.length > 0 && (
+                        <button className="tests-btn tests-btn--small" onClick={downloadPostman}>
+                            Export Postman collection
+                        </button>
+                    )}
+                </div>
+                {authCoverage && authCoverage.totalEndpoints > 0 && (
+                    <p className="tests-page-subtitle">
+                        Auth coverage: <strong>{authCoverage.coveragePct}%</strong> ({authCoverage.protectedCount}/{authCoverage.totalEndpoints} protected) — heuristic, based on nearby auth decorators/middleware only.
+                    </p>
+                )}
+                {apiEndpoints.length === 0 && (
+                    <p className="tests-page-subtitle">No Spring/Flask/FastAPI/Express route patterns were found in this repository's source.</p>
+                )}
+                <div className="api-list">
+                    {apiEndpoints.map((ep, i) => {
+                        const key = `${ep.method}:${ep.path}:${ep.line}`;
+                        return (
+                            <div className="api-row" key={`${key}-${i}`}>
+                                <div className="api-row__top">
+                                    <span className={`api-method api-method--${ep.method.toLowerCase()}`}>{ep.method}</span>
+                                    <span className="api-path">{ep.path}</span>
+                                    <span className={`tests-mock-badge ${ep.authProtected ? 'tests-mock-badge--auth' : ''}`}>
+                                        {ep.authProtected ? '🔒 Auth (inferred)' : '🔓 No auth signal found'}
+                                    </span>
+                                </div>
+                                <p className="api-desc">{ep.framework} · {ep.file}:{ep.line}</p>
+                                <div className="api-row__bottom">
+                                    <button className="tests-btn tests-btn--small" onClick={() => copyCurl(ep)}>
+                                        {copiedFor === key ? 'Copied ✓' : 'Copy cURL'}
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </section>
+
+            <hr className="tests-section-divider" />
+
             <p className="tests-page-subtitle">
-                Checks each backend endpoint's response. <code>{API_ENDPOINTS[0].path}</code> sends a real request; the others show a simulated response (sending fake POST bodies here could write test data into the real backend) — wiring a full request/response validator is later-phase work.
+                Below: tests against <strong>this tool's own backend</strong> (not the repository you uploaded). <code>{API_ENDPOINTS[0].path}</code> sends a real request; the others show a simulated response (sending fake POST bodies here could write test data into the real backend) — wiring a full request/response validator is later-phase work.
             </p>
             <div className="api-list">
                 {API_ENDPOINTS.map((ep) => {

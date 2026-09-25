@@ -266,6 +266,43 @@
 .repo-panel__badge--low { background: rgba(74, 222, 128, 0.15); color: var(--lb-success); }
 .repo-panel__badge--critical { background: rgba(240, 103, 138, 0.15); color: var(--lb-error); }
 
+.repo-panel__file-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+.repo-panel__role-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 5px;
+    background: rgba(99, 102, 241, 0.15);
+    color: var(--lb-accent2);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+}
+.repo-panel__safe-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+}
+.repo-panel__safe-badge--low { background: rgba(74, 222, 128, 0.12); color: var(--lb-success); border-color: rgba(74, 222, 128, 0.3); }
+.repo-panel__safe-badge--medium { background: rgba(240, 180, 41, 0.12); color: var(--lb-warning); border-color: rgba(240, 180, 41, 0.3); }
+.repo-panel__safe-badge--high { background: rgba(240, 164, 65, 0.12); color: #f0a441; border-color: rgba(240, 164, 65, 0.3); }
+.repo-panel__safe-badge--critical { background: rgba(240, 103, 138, 0.15); color: var(--lb-error); border-color: rgba(240, 103, 138, 0.3); }
+.repo-panel__risk-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+}
+.repo-panel__risk-badge--medium { background: rgba(240, 180, 41, 0.12); color: var(--lb-warning); border-color: rgba(240, 180, 41, 0.3); }
+.repo-panel__risk-badge--high { background: rgba(240, 164, 65, 0.12); color: #f0a441; border-color: rgba(240, 164, 65, 0.3); }
+.repo-panel__risk-badge--critical { background: rgba(240, 103, 138, 0.15); color: var(--lb-error); border-color: rgba(240, 103, 138, 0.3); }
+
 .repo-panel__action-desc {
     font-size: 11px;
     color: var(--lb-text-muted);
