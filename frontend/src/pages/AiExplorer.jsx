@@ -8,6 +8,7 @@ import TopNavBar from '../components/TopNavBar.jsx';
 import FolderTree from '../components/FolderTree.jsx';
 import GraphCanvas from '../components/GraphCanvas.jsx';
 import AltVisualizations from '../components/AltVisualizations.jsx';
+import { normalizeGraphView } from '../components/graphViews.js';
 import ResizablePanel from '../components/ResizablePanel.jsx';
 import { askAi } from '../api/backend.js';
 import { AI_PERSONA_LIST, getPersona } from './aiExplorerPersonas.js';
@@ -135,10 +136,9 @@ export default function AiExplorer({ repositoryId, analysisResult, focusedContex
     });
     const [historyOpen, setHistoryOpen] = useState(false);
 
-    // Mirrors whichever map type was last picked in Visualization Explorer (Graph /
-    // Treemap / Subway / Galaxy / etc — see the matching write there) so the mini-map
-    // below shows the same view instead of always defaulting to the force graph.
-    const [minimapVizType] = useState(() => localStorage.getItem('viz-explorer:vizType') || 'subway');
+    // The supported Visualization Explorer view also drives this mini-map.
+    // Legacy stored values are normalized instead of rendering a removed mode.
+    const [minimapVizType] = useState(() => normalizeGraphView(localStorage.getItem('viz-explorer:vizType')));
 
     // Presentation persona — Normal / Detective / Mission Control. Persisted per browser
     // (not per repository) since it's a personal preference, same as the mini-map choice
@@ -220,7 +220,14 @@ export default function AiExplorer({ repositoryId, analysisResult, focusedContex
         setActiveSessionId(activeId);
     }, [repositoryId]);
 
-    const fileContents = analysisResult.fileContents || {};
+    const fileContents = useMemo(() => {
+        // Local snapshots include fileContents; reconstructed backend snapshots
+        // may only include source in analysis.files[].content.
+        const fromFiles = Object.fromEntries((analysisResult.files || [])
+            .filter((file) => typeof file.content === 'string')
+            .map((file) => [file.path, file.content]));
+        return { ...fromFiles, ...(analysisResult.fileContents || {}) };
+    }, [analysisResult.files, analysisResult.fileContents]);
     const hasFileContents = Object.keys(fileContents).length > 0;
 
     function openFile(path) {
@@ -239,7 +246,7 @@ export default function AiExplorer({ repositoryId, analysisResult, focusedContex
     }
 
     const activeContent = useMemo(
-        () => (activeTab ? fileContents[activeTab] ?? '// File content not available for this file.' : ''),
+        () => (activeTab ? fileContents[activeTab] ?? 'Source content not available for this file.' : ''),
         [activeTab, fileContents]
     );
 
@@ -292,7 +299,7 @@ export default function AiExplorer({ repositoryId, analysisResult, focusedContex
                                 placeholder="Search files…"
                             />
                         </div>
-                        <FolderTree files={filteredFiles} selectedPath={activeTab} onSelectFile={openFile} />
+                        <FolderTree files={filteredFiles} selectedPath={activeTab} onSelectFile={openFile} expandAll={Boolean(treeSearch.trim())} />
                     </div>
 
                     {analysisResult.graph && (

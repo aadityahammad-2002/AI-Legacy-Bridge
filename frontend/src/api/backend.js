@@ -1,3 +1,4 @@
+import { stringifyAnalysisPayload } from '../workers/jsonClient.js';
 /**
  * api/backend.js
  *
@@ -46,10 +47,15 @@ export async function deleteRepository(repositoryId) {
 }
 
 export async function ingestAnalysis(repositoryId, analysisResult) {
+    const payload = { repositoryId, ...analysisResult };
+    // Large object serialization can block React for hundreds of ms.
+    // Small requests avoid the extra Worker structured-clone overhead.
+    const large = (analysisResult?.files?.length || 0) >= 75;
+    const body = large ? await stringifyAnalysisPayload(payload) : JSON.stringify(payload);
     const res = await fetch(`${API_BASE}/api/repository/ingest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repositoryId, ...analysisResult }),
+        body,
     });
 
     if (!res.ok) {
@@ -102,12 +108,9 @@ export async function askAi(repositoryId, question, focusedNode, openFilePath, p
 }
 
 /**
- * Real LLM-backed unit tests for one function (replaces the frontend's
- * local buildMockTests() preview when the AI service + LLM key are
- * configured). Stateless — sends the function's source directly, no
- * repositoryId needed. Throws on any failure (network, 503 missing API
- * key, 502 unparseable model output, 500 other) — callers should catch
- * this and fall back to the local mock so the page still works offline.
+ * Real LLM-backed unit-test suggestions for one function. Stateless:
+ * sends source directly, without repositoryId. Errors are surfaced to
+ * the user; the frontend does not fabricate fallback code or test runs.
  * @param {string} functionName
  * @param {string} filePath
  * @param {string} code

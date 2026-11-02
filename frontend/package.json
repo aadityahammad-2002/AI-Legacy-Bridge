@@ -7,7 +7,12 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "analysis:regression": "node src/analysis-engine/benchmarks/run-regression.mjs",
+    "analysis:scale": "node src/analysis-engine/benchmarks/run-scale-regression.mjs",
+    "analysis:self": "node src/analysis-engine/benchmarks/run-self-analysis.mjs",
+    "analysis:project-corpus": "node src/analysis-engine/benchmarks/run-project-corpus.mjs",
+    "analysis:regression:v5": "node src/analysis-engine/benchmarks/run-v5-regression.mjs"
   },
   "dependencies": {
     "@babel/standalone": "^7.28.4",

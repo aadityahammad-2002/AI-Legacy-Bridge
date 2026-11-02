@@ -363,6 +363,16 @@
     line-height: 1.5;
 }
 
+.upload-warning {
+    margin-top: 0.75rem;
+    padding: 0.65rem 0.8rem;
+    border: 1px solid var(--border, rgba(180, 130, 35, 0.35));
+    border-radius: 0.5rem;
+    color: var(--text-secondary, #8a6417);
+    font-size: 0.875rem;
+}
+
+
 .upload-duplicate {
     padding: 14px;
     background: rgba(240, 180, 41, 0.08);

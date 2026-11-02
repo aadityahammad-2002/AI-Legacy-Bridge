@@ -160,15 +160,18 @@ export function tagConfidence(item, confidence, reason) {
  *    projections beyond depth 1) -> UNCERTAIN.
  */
 export function tagFindings({ issues = [], securityIssues = [], duplicates = [] }) {
-    const FACT_TITLES = ['Circular Dependencies', 'Architecture Violations', 'Large Files'];
+    const FACT_TITLES = ['Circular Dependencies', 'Large Files'];
 
     const taggedIssues = issues.map((issue) => {
         const isFact = FACT_TITLES.some((t) => issue.title && issue.title.includes(t));
         if (issue.title && issue.title.includes('Unused Functions')) {
             return tagConfidence(issue, 'INFERENCE', 'No call sites found within this repo — cannot rule out dynamic dispatch, reflection, or external callers.');
         }
+        if (issue.title && issue.title.includes('Architecture Violations')) {
+            return tagConfidence(issue, 'INFERENCE', 'Dependency edges are source-backed, but layer names are inferred from file paths and conventions; confirm the intended architecture before treating this as a violation.');
+        }
         if (issue.title && issue.title.includes('Highly Coupled')) {
-            return tagConfidence(issue, 'FACT', 'Import count measured directly from source files.');
+            return tagConfidence(issue, 'FACT', 'Import count measured directly from resolved module dependency edges.');
         }
         if (issue.title && issue.title.includes('High Complexity')) {
             return tagConfidence(issue, 'INFERENCE', 'Complexity score is a heuristic metric (branching/nesting-based), not a verified defect.');
@@ -200,7 +203,7 @@ function badgeForLevel(level) {
         case 'critical': return { badge: '🔴 High risk', safe: false };
         case 'high': return { badge: '🟠 Risky', safe: false };
         case 'medium': return { badge: '🟡 Moderate', safe: null };
-        default: return { badge: '🟢 Safe to modify', safe: true };
+        default: return { badge: '🟢 Lower observed blast radius', safe: null };
     }
 }
 
@@ -226,7 +229,7 @@ export function computeSafeToTouch({ files, connections }) {
         const reason = blast.count > 0
             ? `${blast.count} file${blast.count === 1 ? '' : 's'} directly depend on this` +
               (blast.transitiveCount > blast.count ? `, plus ${blast.transitiveCount - blast.count} more transitively (projected, not exhaustively verified)` : '')
-            : 'No other file in this repo imports from this one (based on static import/call analysis — dynamic references aren\'t tracked)';
+            : 'No other file was found to depend on this one in the analyzed graph; dynamic references and unresolved imports may be missing.';
 
         map[file.path] = {
             level: blast.level,

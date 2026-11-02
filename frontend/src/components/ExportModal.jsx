@@ -1,3 +1,4 @@
+import { stringifyAnalysisPayload } from '../workers/jsonClient.js';
 import { useState } from 'react';
 import { Upload, X, Image as ImageIcon, FileText, Braces, Settings2, Link2 } from 'lucide-react';
 
@@ -277,7 +278,7 @@ export default function ExportModal({ open, onClose, analysisResult, repoMeta, g
                 setTimeout(() => setCopiedLink(false), 2000);
             } else if (key === 'json') {
                 const data = buildReportData(analysisResult, repoMeta);
-                download(`${safeName(repoName)}-report.json`, JSON.stringify(data, null, 2), 'application/json');
+                download(`${safeName(repoName)}-report.json`, await stringifyAnalysisPayload(data, { pretty: true }), 'application/json');
             } else if (key === 'markdown') {
                 const data = buildReportData(analysisResult, repoMeta);
                 download(`${safeName(repoName)}-report.md`, reportToMarkdown(data), 'text/markdown');
@@ -285,7 +286,7 @@ export default function ExportModal({ open, onClose, analysisResult, repoMeta, g
                 const data = buildReportData(analysisResult, repoMeta);
                 download(`${safeName(repoName)}-report.txt`, reportToPlainText(data), 'text/plain');
             } else if (key === 'rawjson') {
-                download(`${safeName(repoName)}-raw.json`, JSON.stringify(buildRawJson(analysisResult), null, 2), 'application/json');
+                download(`${safeName(repoName)}-raw.json`, await stringifyAnalysisPayload(buildRawJson(analysisResult), { pretty: true }), 'application/json');
             }
         } catch (err) {
             console.error(`[ExportModal] ${key} export failed:`, err);

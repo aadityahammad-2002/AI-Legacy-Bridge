@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import * as d3 from 'd3';
+import { computeGalaxyPositions } from '../workers/graphClient.js';
 import {
     X, ZoomIn, ZoomOut, Maximize2, RotateCcw, MessageSquareCode,
     AlertTriangle, Link2, FileWarning, Ghost,
@@ -168,8 +169,23 @@ export default function ImmersiveGraphView({
         svgEl.call(zoomBehavior);
         zoomBehaviorRef.current = zoomBehavior;
 
+        const controller = new AbortController();
+        let active = true;
         if (mode === 'galaxy') {
-            galaxyHandles = renderGalaxy(zoomLayer, files, nodes, edges, folderColors, degree, circularPairs, size, selectedNodeId, onSelectNode, setHoverNode);
+            if (typeof Worker === 'undefined') {
+                galaxyHandles = renderGalaxy(zoomLayer, files, nodes, edges, folderColors, degree, circularPairs, size, selectedNodeId, onSelectNode, setHoverNode);
+            } else {
+                computeGalaxyPositions(files, nodes, edges, size, { signal: controller.signal })
+                    .then((entries) => {
+                        if (active) galaxyHandles = renderGalaxy(zoomLayer, files, nodes, edges, folderColors,
+                            degree, circularPairs, size, selectedNodeId, onSelectNode, setHoverNode, new Map(entries));
+                    }).catch((error) => {
+                        if (!active || error.name === 'AbortError') return;
+                        console.error('[ImmersiveGraphView] Galaxy Worker failed:', error);
+                        if (active) galaxyHandles = renderGalaxy(zoomLayer, files, nodes, edges, folderColors,
+                            degree, circularPairs, size, selectedNodeId, onSelectNode, setHoverNode);
+                    });
+            }
         } else {
             renderSubway(zoomLayer, files, edges, folderColors, degree, circularPairs, unusedPaths, size, selectedNodeId, onSelectNode, setHoverNode);
         }
@@ -177,7 +193,7 @@ export default function ImmersiveGraphView({
         // gentle auto-fit on first render of this mode/size
         svgEl.call(zoomBehavior.transform, d3.zoomIdentity.translate(size.width * 0.02, size.height * 0.02).scale(0.94));
 
-        return () => svgEl.on('.zoom', null);
+        return () => { active = false; controller.abort(); svgEl.on('.zoom', null); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [mode, files, nodes, edges, size, folderColors, degree, circularPairs, unusedPaths]);
 
@@ -317,7 +333,7 @@ function HealthRing({ score, grade }) {
 // GALAXY — folders as glowing nebula clusters of "star" nodes; cross-folder
 // edges as faint long-range arcs; circular deps as a pulsing red binary pair.
 // ---------------------------------------------------------------------------
-function renderGalaxy(g, files, nodes, edges, folderColors, degree, circularPairs, size, selectedNodeId, onSelectNode, setHoverNode) {
+function renderGalaxy(g, files, nodes, edges, folderColors, degree, circularPairs, size, selectedNodeId, onSelectNode, setHoverNode, workerPositions = null) {
     const folders = [...folderColors.keys()];
     const cx = size.width / 2, cy = size.height / 2;
 
@@ -376,6 +392,8 @@ function renderGalaxy(g, files, nodes, edges, folderColors, degree, circularPair
         id: n.id, folder: topFolder(n.id), label: n.label || baseName(n.id),
         degree: degree.get(n.id) || 0,
     }));
+    // Worker-computed coordinates are applied before labels and SVG drawing.
+    if (workerPositions) simNodes.forEach((n) => Object.assign(n, workerPositions.get(n.id) || {}));
     const idSet = new Set(simNodes.map((n) => n.id));
     const allLinks = edges.filter((e) => idSet.has(e.source) && idSet.has(e.target) && e.source !== e.target);
     const intraLinks = allLinks.filter((e) => topFolder(e.source) === topFolder(e.target))
@@ -468,6 +486,10 @@ function renderGalaxy(g, files, nodes, edges, folderColors, degree, circularPair
             .text(`Circular: ${baseName(a)} \u2194 ${baseName(b)}`);
     });
 
+    if (workerPositions) {
+        const byId = new Map(simNodes.map((n) => [n.id, n]));
+        intraLinks.forEach((edge) => { edge.source = byId.get(edge.source); edge.target = byId.get(edge.target); });
+    } else {
     const sim = d3.forceSimulation(simNodes)
         .force('link', d3.forceLink(intraLinks).id((d) => d.id).distance(28).strength(0.5))
         .force('charge', d3.forceManyBody().strength(-16))
@@ -476,6 +498,7 @@ function renderGalaxy(g, files, nodes, edges, folderColors, degree, circularPair
         .force('collide', d3.forceCollide(8))
         .stop();
     for (let i = 0; i < 180; i++) sim.tick();
+    }
 
     link
         .attr('x1', (d) => d.source.x).attr('y1', (d) => d.source.y)

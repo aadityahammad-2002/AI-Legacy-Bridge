@@ -1,0 +1,12 @@
+AI Legacy Bridge Analysis Engine v8.2.2 — Evidence-first hardening
+
+Scope: analysis-engine module only; no compiler, runtime tracing, storage, or AI layer.
+Changes:
+- Resolve imported Python module method calls (including from-package imports) when one real source module and one top-level function match.
+- Resolve explicitly imported JS/TS namespace module calls. Never bind unrelated objects merely by matching method names.
+- Recover Java class ownership for extracted Java methods from enclosing balanced class declarations; improves typed service receiver resolution when module import evidence exists.
+- Separate inferred graph relations from genuinely unresolved/ambiguous ones in graph diagnostics. Inference is not a defect.
+- Retain business-rule condition evidence while ranking business-likely, technical-guard-likely, or unclassified for downstream LLM interpretation. Domain guard syntax without comparison can be included. No business-policy correctness claim.
+- Add labeled positive/negative fixture test for these three areas and self-corpus quality evaluation output.
+
+Metrics policy: never use unresolved external/framework calls as proof of broken graph links, or inferred graph edges as unresolved errors. Small fixture precision/recall is not enterprise precision/recall. No unverified 80% success claims.

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { ChevronRight, ChevronDown, Folder, FileCode } from 'lucide-react';
 import './FolderTree.css';
 
@@ -20,8 +20,9 @@ function buildTree(paths) {
     return root;
 }
 
-function TreeNode({ node, depth, selectedPath, onSelectFile }) {
-    const [expanded, setExpanded] = useState(depth < 1);
+function TreeNode({ node, depth, selectedPath, onSelectFile, expandAll = false }) {
+    const [expanded, setExpanded] = useState(depth < 1 || expandAll);
+    useEffect(() => { if (expandAll) setExpanded(true); }, [expandAll]);
     const children = [...node.children.values()].sort((a, b) => {
         if (a.isFile !== b.isFile) return a.isFile ? 1 : -1;
         return a.name.localeCompare(b.name);
@@ -61,17 +62,18 @@ function TreeNode({ node, depth, selectedPath, onSelectFile }) {
                         depth={depth + 1}
                         selectedPath={selectedPath}
                         onSelectFile={onSelectFile}
+                        expandAll={expandAll}
                     />
                 ))}
         </div>
     );
 }
 
-export default function FolderTree({ files, selectedPath, onSelectFile }) {
+export default function FolderTree({ files, selectedPath, onSelectFile, expandAll = false }) {
     const tree = useMemo(() => buildTree(files.map((f) => f.path)), [files]);
     return (
         <div className="folder-tree">
-            <TreeNode node={tree} depth={-1} selectedPath={selectedPath} onSelectFile={onSelectFile} />
+            <TreeNode node={tree} depth={-1} selectedPath={selectedPath} onSelectFile={onSelectFile} expandAll={expandAll} />
         </div>
     );
 }

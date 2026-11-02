@@ -2,8 +2,8 @@
  * dependencies.js — Phase 3, batch 7 (Dependency/supply-chain).
  *
  *   1. Third-party dependency inventory — parses manifest files
- *      (package.json, requirements.txt, pyproject.toml, pom.xml,
- *      build.gradle, go.mod) into a flat {name, version, ecosystem} list.
+ *      (npm, Python, Maven/Gradle, Go, Cargo, Composer, Ruby and Mix manifests)
+ *      into a flat {name, version, ecosystem} list.
  *   2. License compliance check — best-effort only. This engine runs
  *      entirely offline against the files it's given; it does NOT call
  *      npm/PyPI/Maven registries to fetch real license metadata. It can
@@ -20,7 +20,7 @@ function parsePackageJson(content) {
     try {
         const pkg = JSON.parse(content);
         const deps = [];
-        ['dependencies', 'devDependencies', 'peerDependencies'].forEach((section) => {
+        ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'].forEach((section) => {
             Object.entries(pkg[section] || {}).forEach(([name, version]) => {
                 deps.push({ name, version: String(version), ecosystem: 'npm', dev: section === 'devDependencies' });
             });
@@ -43,13 +43,31 @@ function parseRequirementsTxt(content) {
 }
 
 function parsePyprojectToml(content) {
+    const source = String(content || '');
     const deps = [];
-    const sectionMatch = content.match(/\[tool\.poetry\.dependencies\]([\s\S]*?)(?=\n\[|\Z)/);
-    if (sectionMatch) {
-        sectionMatch[1].split('\n').forEach((line) => {
-            const m = line.match(/^\s*([A-Za-z0-9_.\-]+)\s*=\s*"?([^"\n]*)"?/);
-            if (m && m[1].toLowerCase() !== 'python') deps.push({ name: m[1], version: m[2] || 'unspecified', ecosystem: 'pypi', dev: false });
+    const poetryMatch = source.match(/\[tool\.poetry\.dependencies\]([\s\S]*?)(?=\n\[|$)/);
+    if (poetryMatch) {
+        poetryMatch[1].split(/\r?\n/).forEach((line) => {
+            const match = line.match(/^\s*([A-Za-z0-9_.-]+)\s*=\s*(?:"([^"]+)"|\{[^}]*version\s*=\s*"([^"]+)"[^}]*\})/);
+            if (match && match[1].toLowerCase() !== 'python') deps.push({ name: match[1], version: match[2] || match[3] || 'unspecified', ecosystem: 'pypi', dev: false });
         });
+    }
+    const projectMatch = source.match(/\[project\]([\s\S]*?)(?=\n\[|$)/);
+    if (projectMatch) {
+        const arrayMatch = projectMatch[1].match(/\bdependencies\s*=\s*\[([\s\S]*?)\]/);
+        for (const item of (arrayMatch?.[1] || '').matchAll(/["']([^"']+)["']/g)) {
+            const spec = item[1].trim();
+            const packageMatch = spec.match(/^([A-Za-z0-9_.-]+)/);
+            if (packageMatch) deps.push({ name: packageMatch[1], version: spec.slice(packageMatch[0].length).trim() || 'unspecified', ecosystem: 'pypi', dev: false });
+        }
+    }
+    const optionalBlock = source.match(/\[project\.optional-dependencies\]([\s\S]*?)(?=\n\[|$)/);
+    if (optionalBlock) {
+        for (const item of optionalBlock[1].matchAll(/["']([^"']+)["']/g)) {
+            const spec = item[1].trim();
+            const packageMatch = spec.match(/^([A-Za-z0-9_.-]+)/);
+            if (packageMatch) deps.push({ name: packageMatch[1], version: spec.slice(packageMatch[0].length).trim() || 'unspecified', ecosystem: 'pypi', dev: true });
+        }
     }
     return deps;
 }
@@ -89,6 +107,53 @@ function parseGoMod(content) {
     return deps;
 }
 
+function parseCargoToml(content) {
+    const deps = [];
+    let section = '';
+    const lines = String(content || '').split(/\r?\n/);
+    for (const line of lines) {
+        const heading = line.match(/^\s*\[([^\]]+)\]\s*$/);
+        if (heading) { section = heading[1].trim(); continue; }
+        if (!/(?:^|\.)(?:dependencies|dev-dependencies|build-dependencies)$/.test(section)) continue;
+        const match = line.match(/^\s*([A-Za-z0-9_.-]+)\s*=\s*(?:"([^"]+)"|\{[^}]*version\s*=\s*"([^"]+)"[^}]*\})/);
+        if (!match) continue;
+        deps.push({ name: match[1], version: match[2] || match[3] || 'unspecified', ecosystem: 'cargo', dev: /dev-dependencies|build-dependencies/.test(section) });
+    }
+    return deps;
+}
+
+function parseComposerJson(content) {
+    try {
+        const composer = JSON.parse(content);
+        const deps = [];
+        for (const section of ['require', 'require-dev']) {
+            Object.entries(composer[section] || {}).forEach(([name, version]) => {
+                if (name === 'php' || name.startsWith('ext-') || name.startsWith('lib-')) return;
+                deps.push({ name, version: String(version), ecosystem: 'composer', dev: section === 'require-dev' });
+            });
+        }
+        return deps;
+    } catch { return []; }
+}
+
+function parseGemfile(content) {
+    const deps = [];
+    const re = /^\s*gem\s+['"]([A-Za-z0-9_.-]+)['"](?:\s*,\s*['"]([^'"]+)['"])?/gm;
+    for (const match of String(content || '').matchAll(re)) {
+        deps.push({ name: match[1], version: match[2] || 'unspecified', ecosystem: 'rubygems', dev: /group\s*:\s*(?:test|development)/i.test(match[0]) });
+    }
+    return deps;
+}
+
+function parseMixExs(content) {
+    const deps = [];
+    const re = /\{\s*:([a-zA-Z0-9_]+)\s*,\s*"([^"\n]+)"/g;
+    for (const match of String(content || '').matchAll(re)) {
+        deps.push({ name: match[1], version: match[2], ecosystem: 'hex', dev: false });
+    }
+    return deps;
+}
+
 const MANIFEST_PARSERS = [
     { re: /package\.json$/, parse: parsePackageJson },
     { re: /requirements.*\.txt$/, parse: parseRequirementsTxt },
@@ -96,6 +161,10 @@ const MANIFEST_PARSERS = [
     { re: /pom\.xml$/, parse: parsePomXml },
     { re: /build\.gradle(\.kts)?$/, parse: parseBuildGradle },
     { re: /go\.mod$/, parse: parseGoMod },
+    { re: /Cargo\.toml$/i, parse: parseCargoToml },
+    { re: /composer\.json$/i, parse: parseComposerJson },
+    { re: /Gemfile$/, parse: parseGemfile },
+    { re: /mix\.exs$/, parse: parseMixExs },
 ];
 
 /** Builds a de-duplicated third-party dependency inventory across manifests. */
@@ -120,7 +189,7 @@ export function extractDependencyInventory(files) {
         totalCount: deduped.length,
         byEcosystem: deduped.reduce((acc, d) => { acc[d.ecosystem] = (acc[d.ecosystem] || 0) + 1; return acc; }, {}),
         confidence: 'FACT',
-        confidenceReason: 'Parsed directly from manifest files (package.json, requirements.txt, pom.xml, build.gradle, go.mod) found in the repo.',
+        confidenceReason: 'Parsed from supported manifest files found in the supplied repository snapshot; text parsers may not cover every manifest feature.',
     };
 }
 
@@ -134,6 +203,7 @@ const KNOWN_LICENSES = {
     'react': 'MIT', 'react-dom': 'MIT', 'vue': 'MIT', 'express': 'MIT', 'lodash': 'MIT',
     'axios': 'MIT', 'flask': 'BSD-3-Clause', 'django': 'BSD-3-Clause', 'requests': 'Apache-2.0',
     'numpy': 'BSD-3-Clause', 'pandas': 'BSD-3-Clause', 'spring-boot-starter': 'Apache-2.0',
+    'serde': 'MIT OR Apache-2.0', 'clap': 'MIT OR Apache-2.0', 'rails': 'MIT', 'phoenix': 'MIT',
     'junit': 'EPL-2.0', 'mysql-connector-java': 'GPL-2.0', 'org.springframework:spring-core': 'Apache-2.0',
 };
 

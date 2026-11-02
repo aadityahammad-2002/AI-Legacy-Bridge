@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
-import { User, Users, Plug, Eye, EyeOff, Trash2, Plus, ArrowLeft, Check, BarChart2 } from 'lucide-react';
+import { useState } from 'react';
+import { User, Users, Plug, Trash2, Plus, ArrowLeft, Check, BarChart2, AlertTriangle } from 'lucide-react';
 import TopNavBar from '../components/TopNavBar.jsx';
+import { listRepositories } from '../api/backend.js';
 import {
     getProfile,
     saveProfile,
@@ -8,17 +9,14 @@ import {
     addTeamMember,
     updateTeamMemberRole,
     removeTeamMember,
-    getConnections,
-    saveConnections,
-    clearAllSettings,
 } from '../session/settings.js';
 import './SettingsPage.css';
 
 const ROLES = ['Admin', 'Member', 'Read-only'];
 const SECTIONS = [
     { id: 'profile', label: 'Profile', icon: User },
-    { id: 'team', label: 'Team access', icon: Users },
-    { id: 'dashboard', label: 'Team dashboard', icon: BarChart2 },
+    { id: 'team', label: 'Local team list', icon: Users },
+    { id: 'dashboard', label: 'Team overview', icon: BarChart2 },
     { id: 'connections', label: 'Connections', icon: Plug },
 ];
 
@@ -99,7 +97,7 @@ function ProfileSection() {
         <div className="settings-card">
             <div className="settings-card__header">
                 <h2>Profile</h2>
-                <p>Your account details for this workspace.</p>
+                <p>Local display preferences only. This is not an authenticated account profile.</p>
             </div>
 
             <div className="settings-field">
@@ -112,14 +110,6 @@ function ProfileSection() {
                 <input type="email" value={profile.email} onChange={update('email')} placeholder="you@company.com" />
             </div>
 
-            <div className="settings-field">
-                <label>Role</label>
-                <select value={profile.role} onChange={update('role')}>
-                    {ROLES.map((r) => (
-                        <option key={r} value={r}>{r}</option>
-                    ))}
-                </select>
-            </div>
 
             <div className="settings-actions">
                 <button className="settings-btn settings-btn--primary" onClick={handleSave}>Save changes</button>
@@ -165,8 +155,8 @@ function TeamSection() {
     return (
         <div className="settings-card">
             <div className="settings-card__header">
-                <h2>Team access</h2>
-                <p>Manage who can open this workspace and what they can do.</p>
+                <h2>Local team list</h2>
+                <p>Browser-only contact list. Adding members or changing roles here does not invite anyone, change repository permissions, or enforce access control.</p>
             </div>
 
             <div className="settings-team-add">
@@ -178,19 +168,19 @@ function TeamSection() {
                 />
                 <button className="settings-btn settings-btn--primary" onClick={handleAdd}>
                     <Plus size={14} strokeWidth={2} />
-                    Add member
+                    Add local entry
                 </button>
             </div>
             {error && <p className="settings-field__error">{error}</p>}
 
             {members.length === 0 ? (
-                <p className="settings-empty">No team members yet. Add someone above to share this workspace.</p>
+                <p className="settings-empty">No local team entries yet. This list does not share the workspace.</p>
             ) : (
                 <table className="settings-team-table">
                     <thead>
                         <tr>
                             <th>Email</th>
-                            <th>Role</th>
+                            <th>Local role note</th>
                             <th aria-label="Remove"></th>
                         </tr>
                     </thead>
@@ -221,156 +211,71 @@ function TeamSection() {
 
 function TeamDashboardSection() {
     const members = getTeamMembers();
-
-    // No telemetry backend exists yet to measure real onboarding time or
-    // autonomy — these are deterministic, per-member mock values (stable
-    // across reloads, not random) so the screen is demoable without
-    // pretending to be live data. Swap for a real metrics API later.
-    const withAutonomy = members.map((m) => ({
-        ...m,
-        autonomy: 20 + (Math.abs(hashCode(m.email)) % 76), // 20-95%, stable per email
-    }));
-    const fullAutonomyCount = withAutonomy.filter((m) => m.autonomy >= 90).length;
-    const avgDays = members.length
-        ? Math.max(14, 60 - Math.round((withAutonomy.reduce((s, m) => s + m.autonomy, 0) / withAutonomy.length) / 3))
-        : 27;
-
     return (
         <div className="settings-card settings-card--wide">
             <div className="settings-card__header">
                 <h2>Team dashboard</h2>
-                <p>
-                    Onboarding progress across your team.
-                    <span className="settings-mock-badge">Preview — based on mock autonomy data, not real telemetry yet</span>
-                </p>
+                <p>Configured local team entries — not onboarding telemetry.</p>
             </div>
-
+            <div className="dash-metrics">
+                <div className="dash-metric-card">
+                    <span className="dash-metric-card__label">Team entries in this browser</span>
+                    <span className="dash-metric-card__value">{members.length}</span>
+                </div>
+                <div className="dash-metric-card">
+                    <span className="dash-metric-card__label">Measured onboarding duration</span>
+                    <span className="dash-metric-card__value">Unavailable</span>
+                </div>
+            </div>
             {members.length === 0 ? (
-                <p className="settings-empty">Add team members in "Team access" to see their onboarding progress here.</p>
+                <p className="settings-empty">No team entries have been configured in this browser.</p>
             ) : (
-                <>
-                    <div className="dash-metrics">
-                        <div className="dash-metric-card">
-                            <span className="dash-metric-card__label">Average onboarding time</span>
-                            <span className="dash-metric-card__value">{avgDays} days</span>
+                <div className="dash-progress-list">
+                    <span className="dash-chart__label">Configured team members</span>
+                    {members.map((member) => (
+                        <div key={member.id} className="dash-progress-row">
+                            <span className="dash-progress-row__name">{member.email}</span>
+                            <span className="dash-progress-row__pct">{member.role || 'Member'}</span>
                         </div>
-                        <div className="dash-metric-card">
-                            <span className="dash-metric-card__label">Developers at full autonomy</span>
-                            <span className="dash-metric-card__value">{fullAutonomyCount} of {members.length}</span>
-                        </div>
-                    </div>
-
-                    <div className="dash-chart">
-                        <span className="dash-chart__label">Onboarding time: before vs after tool</span>
-                        <div className="dash-chart__bars">
-                            <div className="dash-bar">
-                                <div className="dash-bar__fill dash-bar__fill--before" style={{ height: '100%' }} />
-                                <span className="dash-bar__value">60 days</span>
-                                <span className="dash-bar__caption">Before</span>
-                            </div>
-                            <div className="dash-bar">
-                                <div className="dash-bar__fill dash-bar__fill--after" style={{ height: `${Math.round((avgDays / 60) * 100)}%` }} />
-                                <span className="dash-bar__value">{avgDays} days</span>
-                                <span className="dash-bar__caption">After</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="dash-progress-list">
-                        <span className="dash-chart__label">Team member autonomy progress</span>
-                        {withAutonomy.map((m) => (
-                            <div key={m.id} className="dash-progress-row">
-                                <span className="dash-progress-row__name">{m.email}</span>
-                                <div className="dash-progress-row__bar">
-                                    <div style={{ width: `${m.autonomy}%` }} />
-                                </div>
-                                <span className="dash-progress-row__pct">{m.autonomy}%</span>
-                            </div>
-                        ))}
-                    </div>
-                </>
+                    ))}
+                </div>
             )}
+            <p className="settings-empty">Autonomy %, before/after onboarding time and usage analytics are not collected by this frontend. No estimates or fabricated progress are shown.</p>
         </div>
     );
 }
 
-function hashCode(str) {
-    let h = 0;
-    for (let i = 0; i < str.length; i++) h = (h << 5) - h + str.charCodeAt(i);
-    return h;
-}
-
 function ConnectionsSection() {
-    const [connections, setConnections] = useState(getConnections());
-    const [showKey, setShowKey] = useState(false);
-    const [saved, flash] = useSavedFlash();
-    const [confirmingClear, setConfirmingClear] = useState(false);
-
-    const update = (field) => (e) => setConnections((c) => ({ ...c, [field]: e.target.value }));
-
-    const handleSave = () => {
-        saveConnections(connections);
-        flash();
+    const [state, setState] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const check = async () => {
+        setBusy(true);
+        const started = performance.now();
+        try {
+            const data = await listRepositories();
+            setState({ ok: true, ms: Math.round(performance.now() - started), count: Array.isArray(data) ? data.length : null });
+        } catch (error) {
+            setState({ ok: false, ms: Math.round(performance.now() - started), error: error?.message || 'Connection unavailable' });
+        } finally { setBusy(false); }
     };
-
-    const handleClearAll = () => {
-        clearAllSettings();
-        setConnections(getConnections());
-        setConfirmingClear(false);
-    };
-
     return (
         <div className="settings-card">
             <div className="settings-card__header">
-                <h2>Connections</h2>
-                <p>Your LLM provider key and database connection, used to run analysis locally.</p>
+                <h2>Configured services</h2>
+                <p>Service addresses come from frontend environment configuration, not browser-stored keys.</p>
             </div>
-
-            <div className="settings-field">
-                <label>LLM API key</label>
-                <div className="settings-field__with-action">
-                    <input
-                        type={showKey ? 'text' : 'password'}
-                        value={connections.llmApiKey}
-                        onChange={update('llmApiKey')}
-                        placeholder="Paste your provider API key"
-                    />
-                    <button className="settings-icon-btn" onClick={() => setShowKey((s) => !s)} aria-label={showKey ? 'Hide key' : 'Show key'}>
-                        {showKey ? <EyeOff size={14} strokeWidth={1.8} /> : <Eye size={14} strokeWidth={1.8} />}
-                    </button>
-                </div>
-                <p className="settings-hint">Stored only in this browser's local storage — never sent anywhere except your configured LLM provider.</p>
+            <div className="settings-field"><label>Repository backend</label>
+                <code>{import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'}</code>
             </div>
-
-            <div className="settings-field">
-                <label>Database connection</label>
-                <input
-                    type="text"
-                    value={connections.dbConnectionString}
-                    onChange={update('dbConnectionString')}
-                    placeholder="postgres://user:password@host:5432/dbname"
-                />
+            <div className="settings-field"><label>AI service</label>
+                <code>{import.meta.env.VITE_AI_SERVICE_BASE_URL || 'http://localhost:8001'}</code>
             </div>
-
-            <div className="settings-actions">
-                <button className="settings-btn settings-btn--primary" onClick={handleSave}>Save and validate</button>
-                <SavedBadge show={saved} />
-            </div>
-
-            <div className="settings-danger">
-                <div>
-                    <h3>Delete all analysis data</h3>
-                    <p>Removes all processed codebase history and generated charts. This action is irreversible.</p>
-                </div>
-                {!confirmingClear ? (
-                    <button className="settings-btn settings-btn--danger" onClick={() => setConfirmingClear(true)}>Delete</button>
-                ) : (
-                    <div className="settings-danger__confirm">
-                        <button className="settings-btn settings-btn--danger" onClick={handleClearAll}>Yes, delete</button>
-                        <button className="settings-btn" onClick={() => setConfirmingClear(false)}>Cancel</button>
-                    </div>
-                )}
-            </div>
+            <p className="settings-hint">Configure provider API keys and database credentials on the appropriate backend service. The frontend never validates or stores those secrets. AI inference availability is not implied by a repository-backend response.</p>
+            <div className="settings-actions"><button className="settings-btn settings-btn--primary" onClick={check} disabled={busy}>{busy ? 'Checking…' : 'Check repository backend'}</button></div>
+            {state && <p role="status" className={state.ok ? 'settings-hint' : 'settings-field__error'}>
+                {state.ok ? <Check size={13} /> : <AlertTriangle size={13} />}
+                {state.ok ? ` Backend responded in ${state.ms} ms${state.count == null ? '' : ` (${state.count} repository records)`}` : ` ${state.error}`}
+            </p>}
         </div>
     );
 }

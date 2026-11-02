@@ -190,24 +190,29 @@ export default function RepositoryPanel({ analysisResult, selectedPath, onSelect
                         {suggestions.map((s) => {
                             const Icon = ACTION_ICONS[s.icon] || Zap;
                             return (
-                                <div key={s.title} className={`repo-panel__action repo-panel__action--${s.priority.toLowerCase()}`}>
-                                    <div className="repo-panel__action-head">
+                                <details key={s.title} className={`repo-panel__action repo-panel__action--${s.priority.toLowerCase()} repo-panel__action--collapsible`}>
+                                    <summary className="repo-panel__action-head">
                                         <Icon size={15} strokeWidth={1.8} />
                                         <span className="repo-panel__action-title">{s.title}</span>
                                         <span className={`repo-panel__badge repo-panel__badge--${s.priority.toLowerCase()}`}>{s.priority}</span>
+                                        <ChevronDown size={16} className="repo-panel__action-chevron" aria-hidden="true" />
+                                    </summary>
+                                    <div className="repo-panel__action-content">
+                                        <p className="repo-panel__action-desc">{s.desc}</p>
+                                        <div className="repo-panel__action-box">Action: {s.action}</div>
+                                        <p className="repo-panel__action-benefit"><Zap size={11} strokeWidth={2} /> {s.benefit}</p>
                                     </div>
-                                    <p className="repo-panel__action-desc">{s.desc}</p>
-                                    <div className="repo-panel__action-box">Action: {s.action}</div>
-                                    <p className="repo-panel__action-benefit"><Zap size={11} strokeWidth={2} /> {s.benefit}</p>
-                                </div>
+                                </details>
                             );
                         })}
 
                         {duplicates.length > 0 && (
-                            <>
-                                <h4 className="repo-panel__section-title repo-panel__section-title--spaced">
-                                    Duplicate Functions ({duplicates.length})
-                                </h4>
+                            <details className="repo-panel__duplicates repo-panel__duplicates--collapsible">
+                                <summary className="repo-panel__duplicates-head">
+                                    <span>Duplicate Functions ({duplicates.length})</span>
+                                    <ChevronDown size={16} className="repo-panel__duplicates-chevron" aria-hidden="true" />
+                                </summary>
+                                <div className="repo-panel__duplicates-body">
                                 {duplicates.map((d, i) => (
                                     <button key={i} className="repo-panel__dup-row" onClick={() => setModal({ kind: 'duplicate', data: d })}>
                                         <span className={`repo-panel__dup-label repo-panel__dup-label--${d.type}`}>
@@ -217,7 +222,8 @@ export default function RepositoryPanel({ analysisResult, selectedPath, onSelect
                                         <div className="repo-panel__card-link">Click for details ({d.files.length} locations) →</div>
                                     </button>
                                 ))}
-                            </>
+                                </div>
+                            </details>
                         )}
                     </>
                 )}
@@ -263,6 +269,7 @@ export default function RepositoryPanel({ analysisResult, selectedPath, onSelect
 }
 
 function FileDetailView({ detail, fnStats, onBack, onSelectFile, onViewSource, onOpenAiExplorerFocused, connectionsOpen, setConnectionsOpen, functionsOpen, setFunctionsOpen, expandedFn, setExpandedFn }) {
+    const [expandedImpactPath, setExpandedImpactPath] = useState(null);
     const { file, blast, fileFunctions, uses, role, safeToTouch, migrationRisk } = detail;
     const levelLabel = blast.level.toUpperCase();
 
@@ -284,7 +291,7 @@ function FileDetailView({ detail, fnStats, onBack, onSelectFile, onViewSource, o
                     </div>
                     <div className="repo-panel__file-meta">
                         {file.path.split('/').slice(0, -1).join('/') || '(root)'} · {file.loc} lines
-                        {file.complexity ? ` · Complexity: ${file.complexity.score}` : ''}
+                        {Number.isFinite(file.complexity?.score) ? ` · Complexity: ${file.complexity.score}` : file.complexity?.status === 'failed' ? ' · Complexity: unknown (analysis failed)' : ''}
                     </div>
                     {(role || safeToTouch) && (
                         <div className="repo-panel__file-badges">
@@ -309,11 +316,13 @@ function FileDetailView({ detail, fnStats, onBack, onSelectFile, onViewSource, o
                 </button>
             </div>
 
-            <div className="repo-panel__impact">
-                <div className="repo-panel__impact-head">
+            <details key={file.path} className="repo-panel__impact repo-panel__impact--collapsible">
+                <summary className="repo-panel__impact-head">
                     <Zap size={13} strokeWidth={1.8} /> Impact Analysis
                     <span className={`repo-panel__badge repo-panel__badge--${blast.level}`}>{levelLabel}</span>
-                </div>
+                    <ChevronDown size={16} className="repo-panel__impact-chevron" aria-hidden="true" />
+                </summary>
+                <div className="repo-panel__impact-content">
                 <div className="repo-panel__impact-grid">
                     <div className="stat-box stat-box--sm"><span className="stat-box__value">{blast.count}</span><span className="stat-box__label">Direct Dependents</span></div>
                     <div className="stat-box stat-box--sm"><span className="stat-box__value">{blast.transitiveCount}</span><span className="stat-box__label">Transitive</span></div>
@@ -327,14 +336,24 @@ function FileDetailView({ detail, fnStats, onBack, onSelectFile, onViewSource, o
                     <>
                         <div className="repo-panel__impact-label">Files that import from this:</div>
                         <ul className="repo-panel__file-list">
-                            {blast.affected.slice(0, 8).map((path) => (
-                                <li key={path} onClick={() => onSelectFile(path)}>{path.split('/').pop()}</li>
+                            {(expandedImpactPath === file.path ? blast.affected : blast.affected.slice(0, 8)).map((path) => (
+                                <li key={path} onClick={() => onSelectFile(path)} title={path}>{path.split('/').pop()}</li>
                             ))}
                         </ul>
-                        {blast.affected.length > 8 && <div className="repo-panel__more">+{blast.affected.length - 8} more</div>}
+                        {blast.affected.length > 8 && (
+                            <button
+                                type="button"
+                                className="repo-panel__more"
+                                aria-expanded={expandedImpactPath === file.path}
+                                onClick={() => setExpandedImpactPath((current) => current === file.path ? null : file.path)}
+                            >
+                                {expandedImpactPath === file.path ? 'Show less' : `+${blast.affected.length - 8} more`}
+                            </button>
+                        )}
                     </>
                 )}
-            </div>
+                </div>
+            </details>
 
             <div className="repo-panel__collapsible">
                 <button className="repo-panel__collapsible-head" onClick={() => setConnectionsOpen((v) => !v)}>

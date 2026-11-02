@@ -87,6 +87,7 @@ export default function App() {
             setShowSettings(true);
             return;
         }
+        setShowSettings(false);
         setCurrentWorkspace(workspace);
         setActiveWorkspaceState(workspace);
         if (workspace !== 'ai-explorer') setFocusedContext(null);

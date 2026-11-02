@@ -1,3 +1,4 @@
+import MigrationWorker from '../workers/migration.worker.js?worker';
 import { useState, useMemo, useRef, useEffect } from 'react';
 import {
     GitCompare, Sparkles, Send, Shield, AlertTriangle, Rocket, Palette,
@@ -10,6 +11,8 @@ import { getFileTestLock } from '../session/testLock.js';
 import { suggestMigrationAi, askAi } from '../api/backend.js';
 import './MigratePage.css';
 import FolderTree from '../components/FolderTree.jsx';
+import { scanRepository } from '../workers/migrationScan.js';
+import { runWorker } from '../workers/workerClient.js';
 
 const CATEGORY_ORDER = ['Security', 'Deprecated APIs', 'Upgrades', 'Modernization'];
 const CATEGORY_META = {
@@ -26,7 +29,7 @@ const CATEGORY_META = {
  * own editor, and answers free-form migration questions via the AI service.
  *
  * Two ways to get findings:
- *  - "Generate Full Migration Plan" runs the local heuristic across every
+ *  - "Scan repository for migration candidates" runs the local heuristic across every
  *    file. This deliberately does NOT call the real model once per file —
  *    llm_client.py paces real LLM calls ~4.5s apart with a per-minute token
  *    budget, so N real calls back-to-back for a whole repo would be slow
@@ -67,13 +70,29 @@ export default function MigratePage({ analysisResult, activeWorkspace, repositor
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }, [chatMessages, chatLoading]);
 
-    const generatePlan = () => {
+    const scanControllerRef = useRef(null);
+    useEffect(() => () => scanControllerRef.current?.abort(), []);
+    const generatePlan = async () => {
+        scanControllerRef.current?.abort();
+        const controller = new AbortController();
+        scanControllerRef.current = controller;
         setPlanStatus('scanning');
-        setTimeout(() => {
-            const all = files.flatMap((f) => scanFile(f));
+        setAiError(null);
+        setReviewed({});
+        try {
+            const all = typeof Worker === 'undefined'
+                ? scanRepository(files)
+                : await runWorker(MigrationWorker,
+                    { files: files.map((f) => ({ path: f.path, content: f.content })) },
+                    { signal: controller.signal });
+            if (controller.signal.aborted) return;
             setFindings(all);
             setPlanStatus('done');
-        }, 500);
+        } catch (error) {
+            if (controller.signal.aborted) return;
+            setAiError(error?.message || 'Could not scan repository sources.');
+            setPlanStatus('idle');
+        }
     };
 
     const runAiReviewForFile = async (file) => {
@@ -230,7 +249,7 @@ export default function MigratePage({ analysisResult, activeWorkspace, repositor
                         disabled={planStatus === 'scanning' || files.length === 0}
                     >
                         <Sparkles size={15} strokeWidth={2} />
-                        {planStatus === 'scanning' ? 'Scanning repository…' : 'Generate Full Migration Plan'}
+                        {planStatus === 'scanning' ? 'Scanning repository…' : 'Scan repository for migration candidates'}
                     </button>
 
                     {planStatus === 'idle' && (
@@ -509,101 +528,4 @@ function normalizeSeverity(sev) {
     if (s.startsWith('high')) return 'High';
     if (s.startsWith('low')) return 'Low';
     return 'Medium';
-}
-
-let uidCounter = 0;
-function nextId(prefix) {
-    uidCounter += 1;
-    return `${prefix}-${uidCounter}`;
-}
-
-/**
- * Deterministic local heuristic — same role as the old buildMockMigration(),
- * extended to tag a short title and one of the four categories shown in the
- * Overview card, and to keep the real source line number instead of
- * embedding it as a "// line N" comment. Used for the repo-wide "Generate
- * Full Migration Plan" sweep and as the fallback shown for a file until
- * "Run AI review" succeeds. Returns [] if nothing matches, rather than
- * inventing findings.
- */
-function scanFile(file) {
-    const content = file.content || '';
-    const lines = content.split('\n');
-    const findings = [];
-    const MAX_PER_FILE = 6;
-    const isPython = /\.py$/.test(file.path);
-
-    lines.forEach((line, i) => {
-        if (findings.length >= MAX_PER_FILE) return;
-        const lineNo = i + 1;
-        const trimmed = line.trim();
-        if (!trimmed) return;
-
-        if (/\b(password|secret|api[_-]?key|token)\s*=\s*["'][^"']+["']/i.test(line)) {
-            const varName = trimmed.split('=')[0].trim();
-            const after = isPython
-                ? `import os\n${varName} = os.environ.get("${varName.toUpperCase()}")`
-                : `const ${varName} = process.env.${varName.toUpperCase()};`;
-            findings.push({
-                id: nextId('h'), filePath: file.path, line: lineNo,
-                category: 'Security', severity: 'High',
-                title: 'Replace hardcoded secret with environment variable',
-                explanation: 'Hardcoded secrets can be exposed in version control. Use environment variables instead for better security and flexibility.',
-                before: trimmed, after, source: 'heuristic',
-            });
-        } else if (/\beval\s*\(/.test(line)) {
-            findings.push({
-                id: nextId('h'), filePath: file.path, line: lineNo,
-                category: 'Security', severity: 'High',
-                title: 'Avoid eval() for dynamic code execution',
-                explanation: 'eval() can execute arbitrary code and is a common injection vector. Parse or validate the input explicitly instead.',
-                before: trimmed,
-                after: '// Suggested: replace eval() with explicit parsing/validation of the expected input',
-                source: 'heuristic',
-            });
-        } else if (isPython && /^import\s+urllib\s*$/.test(trimmed)) {
-            findings.push({
-                id: nextId('h'), filePath: file.path, line: lineNo,
-                category: 'Deprecated APIs', severity: 'High',
-                title: 'Replace deprecated import with new module',
-                explanation: "Bare 'import urllib' is deprecated in modern Python. Import the specific submodule you need instead, e.g. urllib.parse for URL handling.",
-                before: trimmed,
-                after: 'from urllib import parse  # Use urllib.parse for URL handling',
-                source: 'heuristic',
-            });
-        } else if (/function\s*\(.*\)\s*{\s*$/.test(line) && /callback|cb\)/.test(line)) {
-            findings.push({
-                id: nextId('h'), filePath: file.path, line: lineNo,
-                category: 'Deprecated APIs', severity: 'Medium',
-                title: 'Convert callback to async/await',
-                explanation: 'Callback-style functions are harder to read and compose than modern async/await. Consider converting this to an async function.',
-                before: trimmed,
-                after: '// Suggested: convert to an async function and use await instead of a callback parameter',
-                source: 'heuristic',
-            });
-        } else if (/^(fastapi|django|flask|numpy|requests|spring-boot-starter)\s*==\s*[\d.]+/i.test(trimmed)
-            || /"(react|express|axios|lodash)":\s*"[\^~]?[\d.]+"/i.test(trimmed)) {
-            findings.push({
-                id: nextId('h'), filePath: file.path, line: lineNo,
-                category: 'Upgrades', severity: 'Medium',
-                title: 'Update framework/dependency to a current release',
-                explanation: "This dependency is pinned to a specific version. Check the package's changelog and consider upgrading to a current stable release for security fixes and performance improvements.",
-                before: trimmed,
-                after: '// Suggested: bump this pin after reviewing the changelog for breaking changes',
-                source: 'heuristic',
-            });
-        } else if (/\bvar\s+\w+\s*=/.test(line)) {
-            findings.push({
-                id: nextId('h'), filePath: file.path, line: lineNo,
-                category: 'Modernization', severity: 'Low',
-                title: "Use 'const' or 'let' instead of 'var'",
-                explanation: "'var' is function-scoped and can lead to subtle bugs. Prefer 'const' (or 'let' if reassigned) for block scoping.",
-                before: trimmed,
-                after: trimmed.replace(/\bvar\b/, 'const'),
-                source: 'heuristic',
-            });
-        }
-    });
-
-    return findings;
 }

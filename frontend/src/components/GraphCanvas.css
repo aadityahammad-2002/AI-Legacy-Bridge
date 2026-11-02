@@ -102,3 +102,15 @@
     pointer-events: none;
     user-select: none;
 }
+
+/* Dependency direction is explicit; a source references its arrow target. */
+.graph-canvas__arrow { fill: #7d9caf; opacity: 0.85; }
+.graph-canvas__direction-note {
+    position: absolute; left: 10px; bottom: 10px; z-index: 2;
+    padding: 5px 8px; border-radius: 6px; pointer-events: none;
+    color: var(--lb-text-muted); font-size: 10.5px;
+    border: 1px solid var(--lb-border-soft); background: var(--lb-bg);
+}
+
+.graph-canvas__edge--outgoing { stroke: #4ade80; stroke-width: 2.1; opacity: 0.95; }
+.graph-canvas__edge--incoming { stroke: #facc15; stroke-width: 2.1; opacity: 0.95; }

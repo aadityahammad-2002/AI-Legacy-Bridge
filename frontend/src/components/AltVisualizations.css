@@ -29,20 +29,6 @@
     opacity: 1 !important;
 }
 
-.alt-viz__link {
-    fill: none;
-    stroke: var(--lb-border);
-    stroke-width: 1.2px;
-}
-
-.alt-viz__node circle {
-    transition: r 0.1s ease;
-}
-
-.alt-viz__node:hover circle {
-    r: 6;
-}
-
 .alt-viz__matrix-bg {
     fill: rgba(255, 255, 255, 0.03);
     stroke: var(--lb-border-soft);
@@ -62,17 +48,6 @@
     font-size: 9px;
 }
 
-.alt-viz__bundle-link {
-    fill: none;
-    stroke-width: 1px;
-    transition: opacity 0.15s ease, stroke 0.15s ease;
-}
-
-.alt-viz__bundle-node circle {
-    stroke: var(--lb-bg);
-    stroke-width: 1.5px;
-}
-
 .alt-viz__flow-link {
     transition: opacity 0.15s ease;
 }
@@ -81,7 +56,7 @@
     opacity: 0.85 !important;
 }
 
-/* --- Subway Map / Galaxy Map (shared node/label styling) --- */
+/* --- Subway Map (shared node/label styling) --- */
 .sg__label {
     font-family: var(--lb-font-mono);
     font-size: 10px;
@@ -92,32 +67,6 @@
     stroke: var(--lb-bg);
     stroke-width: 3px;
     stroke-linejoin: round;
-}
-
-/* --- Galaxy Map --- */
-.sg-galaxy__link { stroke: var(--lb-border); stroke-width: 0.6px; opacity: 0.5; transition: opacity 0.35s ease; }
-.sg-galaxy__bundle { fill: none; stroke: var(--lb-accent); opacity: 0.28; }
-.sg-galaxy__nebula { pointer-events: none; }
-.sg-galaxy__halo { opacity: 0.35; filter: blur(4px); pointer-events: none; animation: sg-pulse 3.6s ease-in-out infinite; }
-.sg-galaxy__stars .sg-node { transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.4s ease; cursor: pointer; }
-.sg-galaxy__stars .sg-node:hover .sg-galaxy__star { transform: scale(1.8); }
-.sg-galaxy__stars .sg-node:hover .sg-galaxy__halo { transform: scale(1.5); opacity: 0.55; }
-.sg-galaxy__star, .sg-galaxy__halo { transform-box: fill-box; transform-origin: center; transition: transform 0.15s ease, opacity 0.15s ease; }
-.sg-galaxy__cluster-label {
-    font-family: var(--lb-font-display); font-size: 14px; font-weight: 700; letter-spacing: 0.03em;
-    paint-order: stroke; stroke: var(--lb-bg); stroke-width: 4px; stroke-linejoin: round;
-}
-.sg-node.sg-node--selected .sg-galaxy__star { stroke: #fff; stroke-width: 2px; }
-.sg-galaxy__circular-loop { fill: none; stroke: var(--lb-error); stroke-width: 1.4px; opacity: 0.85; }
-.sg-galaxy__circular-dot { fill: var(--lb-error); filter: drop-shadow(0 0 4px var(--lb-error)); animation: sg-pulse 1.8s ease-in-out infinite; }
-.sg-galaxy__circular-label {
-    font-family: var(--lb-font-mono); font-size: 10px; fill: var(--lb-error); font-weight: 600;
-    paint-order: stroke; stroke: var(--lb-bg); stroke-width: 3px; stroke-linejoin: round;
-}
-
-@keyframes sg-pulse {
-    0%, 100% { opacity: 0.3; }
-    50% { opacity: 0.65; }
 }
 
 /* --- Subway Map --- */
@@ -145,3 +94,92 @@
 .sg-subway__unused-title { font-family: var(--lb-font-display); font-size: 10px; fill: var(--lb-text-faint); text-transform: uppercase; letter-spacing: 0.05em; }
 .sg-subway__unused-dot { fill: var(--lb-text-faint); opacity: 0.6; }
 .sg-subway__unused-label { font-family: var(--lb-font-mono); font-size: 10px; fill: var(--lb-text-faint); }
+
+.alt-viz { position: relative; display: flex; flex-direction: column; min-height: 0; }
+.alt-viz__svg { flex: 1 1 auto; min-height: 0; }
+/* Compact strip is in normal document flow, never layered over graph stations. */
+.alt-viz__caption {
+    position: relative; z-index: 1; box-sizing: border-box;
+    width: 100%; flex: 0 0 auto; min-width: 0;
+    padding: 7px 12px; background: var(--lb-bg);
+    border-bottom: 1px solid var(--lb-border-soft); color: var(--lb-text-muted);
+    font-size: 11px;
+}
+.alt-viz__caption-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.alt-viz__caption strong { flex: 0 0 auto; color: var(--lb-text); font-size: 11.5px; }
+.alt-viz__caption-summary { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alt-viz__caption-detail { padding: 6px 0 2px; overflow-wrap: anywhere; line-height: 1.5; }
+.alt-viz__info-toggle { flex: 0 0 auto; background: transparent; color: var(--lb-text-muted);
+    border: 1px solid var(--lb-border-soft); border-radius: 6px; padding: 3px 7px; cursor: pointer; font: inherit; }
+.alt-viz__info-toggle:hover { color: var(--lb-text); }
+.alt-viz__back { flex: 0 0 auto; background: transparent; border: none; padding: 2px 0; cursor: pointer;
+    text-align: left; color: var(--lb-accent); font: inherit; }
+.alt-viz__back:hover { text-decoration: underline; }
+.alt-viz__cluster-link { stroke: var(--lb-accent); stroke-width: 1px; stroke-opacity: .25; }
+.alt-viz__matrix-grid { stroke: var(--lb-border-soft); stroke-width: 0.4px; pointer-events: none; }
+.sg-subway__more-dot { fill: #8992a6; stroke: var(--lb-bg); stroke-width: 1.5px; }
+.sg-subway__more-text { font-family: var(--lb-font-mono); fill: var(--lb-text-muted); font-size: 11px;
+    paint-order: stroke; stroke: var(--lb-bg); stroke-width: 3px; stroke-linejoin: round; }
+.sg-subway__more:hover .sg-subway__more-dot, .sg-subway__more:focus-visible .sg-subway__more-dot { fill: #fff; }
+.sg-subway__expanded-link { fill: none; opacity: .85; stroke-width: 1.4px; }
+.sg-subway__expanded-station .sg-subway__expanded-label { display: none; }
+.sg-subway__expanded-station:hover .sg-subway__expanded-label,
+.sg-subway__expanded-station:focus .sg-subway__expanded-label,
+.sg-subway__expanded-station.sg-node--selected .sg-subway__expanded-label { display: block; }
+.sg-subway__expanded-label { font: 11px var(--lb-font-mono); fill: var(--lb-text);
+    paint-order: stroke; stroke: var(--lb-bg); stroke-width: 3px; }
+.sg-subway__expanded-hint { font: 10px var(--lb-font-mono); fill: var(--lb-text-muted); pointer-events: none; }
+.sg-subway__dependency { fill: none; stroke: #9bb8cd; stroke-width: 1.5; stroke-dasharray: 4 5; opacity: 0.65; }
+.sg-subway__legend { font: 11px var(--lb-font-mono); fill: var(--lb-text-muted); pointer-events: none; }
+
+/* Overflow popup; does not change any original subway geometry. */
+.sg-subway__card-object { overflow: visible; }
+.sg-subway__card { box-sizing: border-box; width: 100%; height: 100%;
+  display: flex; flex-direction: column; overflow: hidden; border-radius: 12px;
+  border: 1px solid #52657c; background: #111d30; color: #f0f5fa;
+  box-shadow: 0 14px 36px #000a; font: 12px var(--lb-font-mono, monospace); }
+.sg-subway__card-header { display: flex; align-items: flex-start; gap: 8px;
+  justify-content: space-between; border-bottom: 1px solid #35465e; padding: 12px; }
+.sg-subway__card-header strong { display: block; overflow-wrap: anywhere; font-size: 13px; }
+.sg-subway__card-header span { display: block; color: #a6bacb; font-size: 11px; margin-top: 4px; }
+.sg-subway__card-header button { cursor: pointer; border: 0; background: none;
+  color: #e8f2fa; font-size: 23px; line-height: 1; }
+.sg-subway__card-list { overflow-y: auto; flex: 1; min-height: 0; padding: 5px; }
+.sg-subway__card-file { display: block; width: 100%; padding: 9px;
+  background: transparent; color: #dce9f4; border: 0; border-radius: 6px;
+  cursor: pointer; text-align: left; font: inherit; overflow-wrap: anywhere; }
+.sg-subway__card-file:hover, .sg-subway__card-file:focus-visible { background: #293c56; }
+
+
+/* Folder details popup: rounded rectangle; oval FILE icons remain intact. */
+.sg-subway__card { border-radius: 17px; background: #08090d; border: 1px solid #34363d;
+  font-family: inherit; box-shadow: 0 20px 50px #000b; }
+.sg-subway__card-header { padding: 18px 17px 8px; border: 0; }
+.sg-subway__card-header strong { font-size: 17px; font-weight: 650; color: #f4f4f7; }
+.sg-subway__card-header span { color: #b0adb8; font-size: 12px; margin-top: 9px; }
+.sg-subway__card-header button { color: #d5d5d8; font-size: 22px; }
+.sg-subway__card-search { margin: 6px 14px 10px; display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px; border-radius: 8px; color: #b0b0b6; }
+.sg-subway__card-search span { font-size: 22px; }
+.sg-subway__card-search input { width: 100%; min-width: 0; background: transparent; border: 0;
+  outline: 0; color: #f3f3f5; font: 14px inherit; }
+.sg-subway__card-search input::placeholder { color: #aba9b0; }
+.sg-subway__card-list { flex: 1 1 auto; min-height: 0; padding: 4px 15px 15px;
+  overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
+  touch-action: pan-y; scrollbar-width: thin; scrollbar-color: #55545d transparent; }
+.sg-subway__card-file { width: 100%; display: flex; align-items: center; gap: 15px;
+  padding: 12px 1px; background: transparent; color: #ededf2; border: 0;
+  border-radius: 8px; cursor: pointer; text-align: left; }
+.sg-subway__card-file:hover, .sg-subway__card-file:focus-visible { background: #202029; }
+.sg-subway__card-file-oval { flex: 0 0 auto; width: 29px; height: 18px;
+  border: 2px solid #a783ff; border-radius: 999px; }
+.sg-subway__card-file-info { display: flex; flex-direction: column; min-width: 0; gap: 3px; }
+.sg-subway__card-file-name { font-size: 15px; color: #ededf2; overflow-wrap: anywhere; }
+.sg-subway__card-file-path { font-size: 12px; color: #b4b4be; overflow-wrap: anywhere; }
+.sg-subway__card-empty { padding: 20px 8px; color: #b7b3bf; font-size: 13px; }
+
+/* Popup must fully occlude subway nodes/edges; scroll stays native. */
+.sg-subway__card-object { opacity: 1; isolation: isolate; }
+.sg-subway__card { background-color: #08090d !important; opacity: 1 !important;
+  backdrop-filter: none; -webkit-backdrop-filter: none; }
+.sg-subway__card-list, .sg-subway__card-header, .sg-subway__card-search { opacity: 1; }

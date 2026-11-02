@@ -1,3 +1,5 @@
+import { extractLoadedTreeSitterFunctions } from './languageAst.js';
+import { extractLanguageFunctions, identifyCodeLanguage, maskLanguageNonCode, isLikelyJavaDeclaration } from './languageIntelligence.js';
 /*
  * This analysis engine (function/class extraction, import
  * resolution, call-graph building, pattern/duplicate/security detection,
@@ -15,12 +17,202 @@
  */
 
 /**
- * Returns the content to run the security scanner against for a given file.
- * flagging patterns in its own source when analyzing itself — not relevant
- * for our use case since we never analyze this engine's own code.)
+ * Masks comments while preserving source strings and line offsets. The security
+ * scanner pairs this with maskSourceNonCode() so value-aware secret checks can
+ * inspect literal values while executable-code rules ignore strings/comments.
  */
-function getSecurityScanContent(file){
-    return file&&file.content?file.content:'';
+function maskSourceComments(content, filename) {
+    const source = String(content || '');
+    const ext = String(filename || '').toLowerCase().split('.').pop();
+    const isPython = ['py', 'pyw', 'pyi'].includes(ext);
+    const isVba = ['vba', 'bas', 'cls', 'vb'].includes(ext);
+    const output = source.split('');
+    let state = 'code';
+    let quote = '';
+    let triple = false;
+    for (let i = 0; i < source.length;) {
+        const c = source[i], next = source[i + 1], third = source[i + 2];
+        if (state === 'line-comment') {
+            if (c === '\n') state = 'code'; else output[i] = ' ';
+            i++; continue;
+        }
+        if (state === 'block-comment') {
+            if (c === '*' && next === '/') { output[i] = ' '; output[i + 1] = ' '; i += 2; state = 'code'; }
+            else { if (c !== '\n') output[i] = ' '; i++; }
+            continue;
+        }
+        if (state === 'string') {
+            if (c === '\\') { i += Math.min(2, source.length - i); continue; }
+            if (triple && c === quote && next === quote && third === quote) { i += 3; state = 'code'; triple = false; continue; }
+            if (!triple && c === quote) state = 'code';
+            i++; continue;
+        }
+        if (isPython && c === '#') { output[i] = ' '; state = 'line-comment'; i++; continue; }
+        if (isVba && c === "'") { output[i] = ' '; state = 'line-comment'; i++; continue; }
+        if (!isPython && !isVba && c === '/' && next === '/') { output[i] = ' '; output[i + 1] = ' '; state = 'line-comment'; i += 2; continue; }
+        if (!isPython && !isVba && c === '/' && next === '*') { output[i] = ' '; output[i + 1] = ' '; state = 'block-comment'; i += 2; continue; }
+        if (isPython && ((c === '"' && next === '"' && third === '"') || (c === "'" && next === "'" && third === "'"))) { quote = c; triple = true; state = 'string'; i += 3; continue; }
+        if (c === '"' || c === "'" || (!isPython && !isVba && c === '`')) { quote = c; triple = false; state = 'string'; i++; continue; }
+        i++;
+    }
+    return output.join('');
+}
+
+function maskSourceNonCode(content, filename) {
+    const source = String(content || '');
+    const ext = String(filename || '').toLowerCase().split('.').pop();
+    const isPython = ['py', 'pyw', 'pyi'].includes(ext);
+    const isVba = ['vba', 'bas', 'cls', 'vb'].includes(ext);
+    const isJsLike = ['js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'vue', 'svelte'].includes(ext);
+    const output = source.split('');
+    const templates = [];
+    let state = 'code';
+    let quote = '';
+    let triple = false;
+
+    const mask = (index) => {
+        if (index >= 0 && index < output.length && source[index] !== '\n' && source[index] !== '\r') output[index] = ' ';
+    };
+
+    for (let i = 0; i < source.length;) {
+        const c = source[i], next = source[i + 1], third = source[i + 2];
+
+        if (state === 'line-comment') {
+            if (c === '\n' || c === '\r') state = 'code';
+            else mask(i);
+            i++;
+            continue;
+        }
+        if (state === 'block-comment') {
+            if (c === '*' && next === '/') {
+                mask(i); mask(i + 1); i += 2; state = 'code';
+            } else { mask(i); i++; }
+            continue;
+        }
+        if (state === 'string') {
+            if (c === '\\') { mask(i); mask(i + 1); i += Math.min(2, source.length - i); continue; }
+            if (triple && c === quote && next === quote && third === quote) {
+                mask(i); mask(i + 1); mask(i + 2); i += 3; state = 'code'; triple = false; continue;
+            }
+            if (!triple && c === quote) { mask(i); i++; state = 'code'; continue; }
+            mask(i); i++; continue;
+        }
+        if (state === 'template') {
+            if (c === '\\') { mask(i); mask(i + 1); i += Math.min(2, source.length - i); continue; }
+            if (c === '`') {
+                mask(i); i++; templates.pop(); state = 'code'; continue;
+            }
+            if (c === '$' && next === '{') {
+                mask(i); mask(i + 1);
+                const frame = templates[templates.length - 1];
+                if (frame) { frame.inExpression = true; frame.braceDepth = 1; }
+                i += 2; state = 'code'; continue;
+            }
+            mask(i); i++; continue;
+        }
+
+        // Inside ${...}, count braces but preserve real expression code.
+        const frame = templates[templates.length - 1];
+        if (frame?.inExpression) {
+            if (c === '{') frame.braceDepth++;
+            else if (c === '}') {
+                frame.braceDepth--;
+                if (frame.braceDepth === 0) {
+                    mask(i); i++; frame.inExpression = false; state = 'template'; continue;
+                }
+            }
+        }
+
+        if (isPython && c === '#') { mask(i); state = 'line-comment'; i++; continue; }
+        if (isVba && c === "'") { mask(i); state = 'line-comment'; i++; continue; }
+        if (!isPython && !isVba && c === '/' && next === '/') { mask(i); mask(i + 1); state = 'line-comment'; i += 2; continue; }
+        if (!isPython && !isVba && c === '/' && next === '*') { mask(i); mask(i + 1); state = 'block-comment'; i += 2; continue; }
+
+        if (isPython && ((c === '"' && next === '"' && third === '"') || (c === "'" && next === "'" && third === "'"))) {
+            quote = c; triple = true; mask(i); mask(i + 1); mask(i + 2); state = 'string'; i += 3; continue;
+        }
+        if (isJsLike && c === '`') {
+            mask(i); templates.push({ inExpression: false, braceDepth: 0 }); state = 'template'; i++; continue;
+        }
+        if (c === '"' || c === "'" || (!isJsLike && !isPython && !isVba && c === '`')) { quote = c; triple = false; mask(i); state = 'string'; i++; continue; }
+        i++;
+    }
+    return output.join('');
+}
+
+/**
+ * Bounded brace-based end-line estimate used only by regex extractors.
+ * AST-backed extractors remain authoritative when available. If a block body
+ * cannot be identified, return the declaration line rather than inventing a
+ * broad range that could attribute unrelated calls to the function.
+ */
+function estimateBracedEndLine(content, startLine, functionName, kind, filename) {
+    const source = String(content || '');
+    const lines = source.split('\n');
+    if (!Number.isFinite(startLine) || startLine < 1 || startLine > lines.length) return startLine;
+    const masked = maskSourceNonCode(source, filename || '');
+    const maskedLines = masked.split('\n');
+    const lineStart = maskedLines.slice(0, startLine - 1).reduce((total, line) => total + line.length + 1, 0);
+    const lineEnd = masked.indexOf('\n', lineStart);
+    const declarationLine = masked.slice(lineStart, lineEnd < 0 ? masked.length : lineEnd);
+    const escaped = String(functionName || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const nameMatch = new RegExp('\\b' + escaped + '\\b').exec(declarationLine);
+    if (!nameMatch) return startLine;
+
+    let bodySearchStart = -1;
+    if (kind === 'arrow') {
+        const arrowIndex = declarationLine.indexOf('=>', nameMatch.index + nameMatch[0].length);
+        if (arrowIndex < 0) return startLine;
+        let candidate = lineStart + arrowIndex + 2;
+        while (candidate < masked.length && /\s/.test(masked[candidate])) candidate++;
+        // Expression-bodied arrows are intentionally bounded to the declaration line.
+        if (masked[candidate] !== '{') return startLine;
+        bodySearchStart = candidate;
+    } else {
+        let signatureStart = lineStart + nameMatch.index;
+        if (kind === 'function') {
+            const functionKeyword = declarationLine.indexOf('function');
+            if (functionKeyword >= 0) signatureStart = lineStart + functionKeyword + 'function'.length;
+        }
+        const openParen = masked.indexOf('(', signatureStart);
+        if (openParen < 0) return startLine;
+        let depth = 0;
+        let closeParen = -1;
+        for (let i = openParen; i < masked.length; i++) {
+            if (masked[i] === '(') depth++;
+            else if (masked[i] === ')') {
+                depth--;
+                if (depth === 0) { closeParen = i; break; }
+            }
+            // Avoid wandering into an unrelated function if a signature is malformed.
+            if (i - openParen > 2000) break;
+        }
+        if (closeParen < 0) return startLine;
+        let candidate = closeParen + 1;
+        const maxSearch = Math.min(masked.length, candidate + 2000);
+        while (candidate < maxSearch) {
+            const char = masked[candidate];
+            if (char === '{') { bodySearchStart = candidate; break; }
+            if (char === ';') return startLine;
+            candidate++;
+        }
+        if (bodySearchStart < 0) return startLine;
+    }
+
+    let braceDepth = 0;
+    for (let i = bodySearchStart; i < masked.length; i++) {
+        if (masked[i] === '{') braceDepth++;
+        else if (masked[i] === '}') {
+            braceDepth--;
+            if (braceDepth === 0) return masked.slice(0, i).split('\n').length;
+        }
+        if (i - bodySearchStart > 250000) break;
+    }
+    return startLine;
+}
+
+function getSecurityScanContent(file) {
+    return file && file.content ? maskSourceComments(file.content, file.path || file.name || '') : '';
 }
 
 function isSanitizedPreviewRenderer(content){
@@ -84,9 +276,15 @@ function isNonProductionPath(path){
 function isSecretScanExemptPath(path){
     var p=String(path||'').toLowerCase().replace(/\\/g,'/');
     if(isArchitectureTestFile(p))return true;
+    if(/(^|\/)benchmarks?(\/|$)|(^|\/)__mocks__(\/|$)/.test(p))return true;
     if(isArchitectureFixtureFile(p))return true;
     if(isDocumentationPath(p))return true;
     return false;
+}
+
+function isPlaceholderSecretValue(matchText){
+    var value=String(matchText||'').replace(/^[^=:]*[=:]\s*/, '').trim().replace(/^['"`]|['"`]$/g,'').toLowerCase();
+    return /^(?:changeme|change-me|change_me|example|sample|placeholder|your[-_ ]?(?:api[-_ ]?)?key|your[-_ ]?token|dummy|redacted|replace[-_ ]?me|todo|xxx+|\*{3,}|<[^>]+>)$/.test(value) || /^(?:password|pass|secret|user|username):(password|pass|example|changeme|placeholder)@/.test(value);
 }
 
 function normalizeArchitecturePath(value){
@@ -293,6 +491,45 @@ function extractPythonDataclassMembers(content, filename, lines, addFn, extractC
     });
 }
 
+function maskNonCodeForFallback(content, options = {}) {
+    const source = String(content || '');
+    if (options.isPython) return source; // Python fallback already calls stripPythonNonCode before reaching this pass.
+    const isVBA = !!options.isVBA;
+    const output = source.split('');
+    let state = 'code';
+    let quote = '';
+    let i = 0;
+    while (i < source.length) {
+        const c = source[i];
+        const next = source[i + 1];
+        if (state === 'line-comment') {
+            if (c === '\n') state = 'code'; else output[i] = ' ';
+            i++;
+            continue;
+        }
+        if (state === 'block-comment') {
+            if (c === '*' && next === '/') { output[i] = ' '; output[i + 1] = ' '; i += 2; state = 'code'; }
+            else { if (c !== '\n') output[i] = ' '; i++; }
+            continue;
+        }
+        if (state === 'string') {
+            if (c === '\\') { output[i] = ' '; if (i + 1 < source.length && source[i + 1] !== '\n') output[i + 1] = ' '; i += 2; continue; }
+            if (c === quote) { output[i] = ' '; i++; state = 'code'; continue; }
+            if (c !== '\n') output[i] = ' ';
+            i++;
+            continue;
+        }
+        if (isVBA && c === "'") { output[i] = ' '; i++; state = 'line-comment'; continue; }
+        if (!isVBA && c === '/' && next === '/') { output[i] = ' '; output[i + 1] = ' '; i += 2; state = 'line-comment'; continue; }
+        if (!isVBA && c === '/' && next === '*') { output[i] = ' '; output[i + 1] = ' '; i += 2; state = 'block-comment'; continue; }
+        if (c === '"' || (!isVBA && c === "'") || (!isVBA && options.isJS && c === '`')) {
+            quote = c; output[i] = ' '; i++; state = 'string'; continue;
+        }
+        i++;
+    }
+    return output.join('');
+}
+
 const Parser={
     // Tree-sitter parsers are loaded lazily from CDN and used when a language has
     // a stable grammar path. Regex remains an explicit fallback, not a silent lie.
@@ -380,7 +617,7 @@ const Parser={
         var configs=new Map();
         (files||[]).forEach(function(file){
             var cfg=Parser.getTreeSitterConfig(file.path||file.name);
-            if(cfg&&cfg.coverage==='calls')configs.set(cfg.grammar,cfg);
+            if(cfg)configs.set(cfg.grammar,cfg);
         });
         await Promise.all(Array.from(configs.values()).map(function(cfg){return Parser.loadTreeSitterLanguage(cfg);}));
     },
@@ -392,12 +629,12 @@ const Parser={
         var lower=(filename||'').toLowerCase();
         var cfg=Parser.getTreeSitterConfig(filename);
         if(cfg&&Parser._tsParsers[cfg.grammar])return cfg.coverage==='calls'?'tree-sitter:'+cfg.grammar+'-calls':'tree-sitter:'+cfg.grammar;
-        if(['.js','.jsx','.ts','.tsx','.mjs','.cjs','.vue','.svelte'].some(function(ext){return lower.endsWith(ext);})&&typeof acorn!=='undefined')return 'acorn-babel';
+        if(['.js','.jsx','.ts','.tsx','.mts','.cts','.mjs','.cjs','.vue','.svelte'].some(function(ext){return lower.endsWith(ext);})&&typeof acorn!=='undefined')return 'acorn-babel';
         if(Parser.isMarkdown&&Parser.isMarkdown(filename))return 'markdown-link-parser';
         if(Parser.isCode(filename))return 'heuristic-regex';
         return 'text';
     },
-    codeExts:['.js','.jsx','.ts','.tsx','.mjs','.cjs','.py','.pyw','.pyi','.java','.go','.rb','.php','.rs','.c','.cpp','.cc','.h','.hpp','.cs','.swift','.kt','.kts','.scala','.clj','.ex','.exs','.erl','.hs','.lua','.r','.R','.jl','.dart','.elm','.fs','.fsx','.ml','.pl','.pm','.sh','.bash','.zsh','.fish','.ps1','.psm1','.groovy','.gradle','.vba','.bas','.cls','.xlsm','.xlam','.xlsb','.xla','.xlw'],
+    codeExts:['.js','.jsx','.ts','.tsx','.mts','.cts','.mjs','.cjs','.py','.pyw','.pyi','.java','.go','.rb','.php','.rs','.c','.cpp','.cc','.cxx','.h','.hpp','.hh','.hxx','.cs','.swift','.kt','.kts','.scala','.clj','.cljs','.cljc','.ex','.exs','.erl','.hrl','.hs','.lhs','.lua','.r','.R','.jl','.dart','.elm','.fs','.fsx','.ml','.mli','.pl','.pm','.sh','.bash','.zsh','.fish','.ps1','.psm1','.groovy','.gradle','.vba','.bas','.cls','.xlsm','.xlam','.xlsb','.xla','.xlw'],
     scriptContainerExts:['.html','.htm','.xhtml','.vue','.svelte'],
     textExts:['.md','.markdown','.txt','.json','.jsonl','.yaml','.yml','.toml','.xml','.html','.htm','.css','.scss','.sass','.less','.svg','.graphql','.gql','.sql','.prisma','.proto','.tf','.tfvars','.env','.env.example','.gitignore','.gitattributes','.gitmodules','.eslintrc','.prettierrc','.babelrc','.editorconfig','.ini','.cfg','.conf','.properties','.lock','.csv','.tsv','.rst','.tex','.cmake','.rake','.vba','.bas','.cls','.xlsm','.xlam','.xlsb','.xla','.xlw','.mod','.sum'],
     textNames:['dockerfile','containerfile','makefile','rakefile','gemfile','podfile','pipfile','procfile','brewfile','justfile','taskfile','cmakelists.txt','license','copying','notice','readme','changelog','authors','contributors','owners','codeowners','go.mod','go.sum'],
@@ -637,7 +874,10 @@ const Parser={
         if(l.includes('/forms/')||l.includes('/userforms/'))return'ui';
         if(l.includes('/classes/'))return'data';
         if(l.includes('/standard/'))return'utils';
-        return'utils';
+        // Unknown paths are not proven utility/helper layers. Using `utils`
+        // here caused ordinary root-level files to generate false architecture
+        // violations against services/controllers.
+        return'other';
     },
     detectPatterns:function(files){
         var patterns=[];
@@ -930,26 +1170,27 @@ const Parser={
         return violations;
     },
     calcComplexity:function(content,filename){
-        if(!content)return{score:0,level:'low'};
+        if(!content)return{score:0,level:'low',method:'heuristic-branch-count',decisionPoints:0};
         if(filename&&Parser.isScriptContainer(filename)){
             var blocks=Parser.getEmbeddedCodeBlocks(content,filename,{includeHandlers:true});
-            if(!blocks.length)return{score:0,level:'low'};
+            if(!blocks.length)return{score:null,level:'not-applicable',status:'skipped',method:'not-applicable',decisionPoints:null,limitations:['No executable script block was found in this markup file.']};
             content=blocks.map(function(block){return block.content;}).join('\n');
         }
-        // Approximate cyclomatic complexity - supports JS, Python, and other languages
+        // Count only code tokens: comments and string literals must not inflate
+        // complexity merely because they contain words such as `if` or `for`.
+        var ext=String(filename||'').toLowerCase().split('.').pop();
+        var isPython=['py','pyw','pyi'].includes(ext);
+        var code=maskSourceNonCode(content,filename||'');
         var complexity=1;
-        // JS/C-style patterns
-        var patterns=[/\bif\s*\(/g,/\belse\s+if\s*\(/g,/\bwhile\s*\(/g,/\bfor\s*\(/g,/\bcase\s+/g,/\bcatch\s*\(/g,/\?\s*[^:]+\s*:/g,/&&/g,/\|\|/g];
-        // Python-specific patterns
-        var pyPatterns=[/\bif\s+[^(]/g,/\belif\s+/g,/\bwhile\s+[^(]/g,/\bfor\s+\w+\s+in\s+/g,/\bexcept\s*/g,/\bwith\s+/g,/\band\b/g,/\bor\b/g,/\bif\s+.+\s+else\s+/g,/\bfor\s+.+\s+in\s+[^\n]*\]/g];
-        patterns.concat(pyPatterns).forEach(function(p){var m=content.match(p);if(m)complexity+=m.length;});
-        // Deduplicate: if both `if (` and `if ` match the same lines, the count is inflated
-        // but for a quick approximation this is acceptable
+        var patterns=isPython
+            ? [/\b(?:if|elif|while)\b/g,/\bfor\b/g,/\bexcept\b/g,/\b(?:and|or)\b/g]
+            : [/\bif\s*\(/g,/\bfor\s*\(/g,/\bwhile\s*\(/g,/\bcase\b/g,/\bcatch\s*\(/g,/&&/g,/\|\|/g,/\?\?(?![=])/g,/(?<!\?)\?(?![?.])(?!(?:\s*):)\s*[^:\n]+:/g];
+        patterns.forEach(function(pattern){var matches=code.match(pattern);if(matches)complexity+=matches.length;});
         var level='low';
         if(complexity>30)level='critical';
         else if(complexity>20)level='high';
         else if(complexity>10)level='medium';
-        return{score:complexity,level:level};
+        return {score:complexity,level:level,method:'heuristic-branch-count',decisionPoints:Math.max(0,complexity-1),limitations:['File-level approximate branch count, not compiler-reported cyclomatic complexity.','Complex constructs, macros, generated code and language-specific control flow may be under- or over-counted.']};
     },
     generateSuggestions:function(data){
         var suggestions=[];
@@ -1005,25 +1246,38 @@ const Parser={
         files.forEach(function(f){
             var scanContent=getSecurityScanContent(f);
             if(!scanContent)return;
+            // Keep the comment-masked source for value-aware checks, and a second
+            // lexical mask for executable-code checks. This prevents patterns in
+            // string literals (including this scanner's own regexes/examples) from
+            // being mistaken for code while preserving original line offsets.
+            var codeContent=maskSourceNonCode(f.content||'',f.path||f.name||'');
             var lines=scanContent.split('\n');
+            var codeLines=codeContent.split('\n');
             lines.forEach(function(line,idx){
-                if(!isSecretScanExemptPath(f.path)&&line.match(/(?:password|passwd|pwd|secret|api_key|apikey|token|auth)\s*[=:]\s*['"][^'"]{4,}['"]/i)&&!line.includes('process.env')&&!line.includes('config.')){
-                    issues.push({severity:'high',title:'Hardcoded Secret',file:f.name,path:f.path,line:idx+1,desc:'Credentials should never be hardcoded. Use environment variables or a secrets manager.',code:line.trim().substring(0,80)});
+                var secretPattern=/(?:password|passwd|pwd|secret|api_key|apikey|token|auth)\s*[=:]\s*['"][^'"]{4,}['"]/i;
+                var secretMatch=line.match(secretPattern);
+                var activeKey=secretMatch&&codeLines[idx]&&codeLines[idx].slice(secretMatch.index,secretMatch.index+secretMatch[0].search(/\s*[=:]/)).trim();
+                if(!isSecretScanExemptPath(f.path)&&secretMatch&&activeKey&&!/^\s*$/.test(activeKey)&&!line.includes('process.env')&&!line.includes('config.')&&!isPlaceholderSecretValue(secretMatch[0])){
+                    issues.push({severity:'high',title:'Hardcoded Secret',file:f.name,path:f.path,line:idx+1,desc:'A credential-shaped assignment appears in executable source. Verify whether the value is live; rotate it if real and move it to an environment variable or secrets manager.',code:line.trim().substring(0,80),confidence:'INFERENCE',confidenceReason:'Assignment shape is present in executable code; this heuristic cannot determine whether the value is live, revoked, or a sample.'});
                 }
             });
-            var hasSqlConcat=scanContent.match(/query\s*\(\s*['"`][^'"`]*\s*\+/)||scanContent.match(/execute\s*\(\s*['"`][^'"`]*\$\{/);
-            var dbCallRegex=/\b(?:query|execute|raw)\s*\(([^)]*)\)/gi;
+            var hasSqlConcat=!!(codeContent.match(/\b(?:query|execute|raw)\s*\(/)&& scanContent.match(/\b(?:query|execute|raw)\s*\(\s*(?:'[^']*'|\"[^\"]*\"|`[^`]*`)\s*\+/));
             var hasSqlTemplateInjection=false;
+            // Only flag interpolated template literals passed to an executable DB call;
+            // `${...}` text inside an ordinary quoted string is not interpolation.
+            var templateDbCall=/\b(?:query|execute|raw)\s*\(\s*`([^`]*\$\{[^`]*)`/gi;
             var dbCall;
-            while((dbCall=dbCallRegex.exec(scanContent))!==null){
-                if(/\$\{/.test(dbCall[1])&&/(?:SELECT|INSERT|UPDATE|DELETE)/i.test(dbCall[1])){hasSqlTemplateInjection=true;break;}
+            while((dbCall=templateDbCall.exec(scanContent))!==null){
+                if(/(?:SELECT|INSERT|UPDATE|DELETE)/i.test(dbCall[1])){hasSqlTemplateInjection=true;break;}
             }
+            if(!codeContent.match(/\b(?:query|execute|raw|executeQuery|executeUpdate|prepareStatement|createQuery)\s*\(/))hasSqlTemplateInjection=false;
             if(f.isCode&&(hasSqlConcat||hasSqlTemplateInjection)){
                 var m=scanContent.match(/.*(query|execute|SELECT|INSERT|UPDATE|DELETE).*(\+|\$\{).*/i);
-                issues.push({severity:'high',title:'SQL Injection Risk',file:f.name,path:f.path,desc:'String concatenation in SQL queries. Use parameterized queries instead.',code:m?m[0].trim().substring(0,80):''});
+                var sqlLine=codeLines.findIndex(function(l){return /\b(?:query|execute|raw|executeQuery|executeUpdate|prepareStatement|createQuery)\s*\(/.test(l);});
+                issues.push({severity:'high',title:'Potential SQL Injection Risk',file:f.name,path:f.path,line:sqlLine>=0?sqlLine+1:undefined,desc:'A SQL construction pattern may combine query text with dynamic input. Verify parameterization and value binding before treating this as exploitable.',code:sqlLine>=0?lines[sqlLine].trim().substring(0,120):(m?m[0].trim().substring(0,120):''),confidence:'INFERENCE',confidenceReason:'String-construction heuristic; query parameterization, taint reachability, and driver semantics were not proven.'});
             }
-            var hasInnerHtmlAssignment=scanContent.match(/innerHTML\s*=/);
-            var hasDangerousHtmlRender=scanContent.match(/dangerouslySetInnerHTML/);
+            var hasInnerHtmlAssignment=codeContent.match(/innerHTML\s*=/);
+            var hasDangerousHtmlRender=codeContent.match(/dangerouslySetInnerHTML/);
             var isSafePreviewRender=!hasInnerHtmlAssignment&&hasDangerousHtmlRender&&isSanitizedPreviewRenderer(f.content||'');
             var htmlValueRegex=/dangerouslySetInnerHTML\s*[:=]\s*\{\{?\s*__html\s*:\s*([^}]+)\}/g;
             var allHtmlValuesLiteral=true;
@@ -1037,92 +1291,97 @@ const Parser={
             }
             var isSafeStaticHtml=!hasInnerHtmlAssignment&&hasDangerousHtmlRender&&foundHtmlValue&&allHtmlValuesLiteral;
             if(!isNonProductionPath(f.path)&&(hasInnerHtmlAssignment||hasDangerousHtmlRender)&&!isSafePreviewRender&&!isSafeStaticHtml){
-                issues.push({severity:'high',title:'XSS Vulnerability',file:f.name,path:f.path,desc:'Direct HTML injection can lead to XSS attacks. Sanitize user input.',code:''});
+                var xssLine=codeLines.findIndex(function(l){return /innerHTML\s*=|dangerouslySetInnerHTML/.test(l);});
+                issues.push({severity:'high',title:'Potential XSS Sink',file:f.name,path:f.path,line:xssLine>=0?xssLine+1:undefined,desc:'An executable HTML injection sink was found. Exploitability depends on the value reaching this sink and the escaping/sanitization path.',code:xssLine>=0?lines[xssLine].trim().substring(0,160):'',confidence:'INFERENCE',confidenceReason:'Sink-only heuristic; source-to-sink reachability and sanitizer behavior were not proven.'});
             }
-            if(scanContent.includes('eval(')){
-                var evalLine=lines.findIndex(function(l){return l.includes('eval(');});
-                issues.push({severity:'medium',title:'Dynamic Code Execution',file:f.name,path:f.path,line:evalLine+1,desc:'eval() executes arbitrary code. Avoid if possible or validate input strictly.',code:evalLine>=0?lines[evalLine].trim().substring(0,80):''});
+            if(codeContent.includes('eval(')){
+                var evalLine=codeLines.findIndex(function(l){return l.includes('eval(');});
+                issues.push({severity:'medium',title:'Dynamic Code Execution',file:f.name,path:f.path,line:evalLine+1,desc:'eval() executes arbitrary code. Avoid if possible or validate input strictly.',code:evalLine>=0?lines[evalLine].trim().substring(0,80):'',confidence:'INFERENCE',confidenceReason:'Executable eval call detected; source and runtime input reachability are not proven.'});
             }
-            if(scanContent.match(/\b(?:new\s+)?Function\s*\(/)){
-                issues.push({severity:'medium',title:'Function Constructor',file:f.name,path:f.path,desc:'Function constructor is similar to eval(). Consider alternatives.',code:''});
+            var functionMatch=codeContent.match(/\b(?:new\s+)?Function\s*\(/);
+            if(functionMatch){
+                var functionLine=codeLines.findIndex(function(l){return /\b(?:new\s+)?Function\s*\(/.test(l);});
+                issues.push({severity:'medium',title:'Function Constructor',file:f.name,path:f.path,line:functionLine>=0?functionLine+1:undefined,desc:'Function constructor is similar to eval(). Consider alternatives.',code:functionLine>=0?lines[functionLine].trim().substring(0,120):'',confidence:'INFERENCE',confidenceReason:'Executable Function-constructor call detected; the argument source and runtime reachability are not proven.'});
             }
-            var execMatch=scanContent.match(/(?:child_process|cp)\.\w*[Ee]xec\w*\s*\(/)||scanContent.match(/require\(\s*['"](?:node:)?child_process['"]\s*\)/)||scanContent.match(/from\s+['"](?:node:)?child_process['"]/);
+            var execMatch=codeContent.match(/(?:child_process|cp)\.\w*[Ee]xec\w*\s*\(/)||codeContent.match(/\b(?:exec|execSync|spawn|spawnSync)\s*\(/);
             if(!isNonProductionPath(f.path)&&execMatch){
-                issues.push({severity:'medium',title:'Command Execution',file:f.name,path:f.path,desc:'Shell command execution detected. Ensure input is sanitized to prevent injection.',code:''});
+                var commandLine=codeLines.findIndex(function(l){return /(?:child_process|cp)\.\w*[Ee]xec\w*\s*\(|\b(?:exec|execSync|spawn|spawnSync)\s*\(/.test(l);});
+                issues.push({severity:'medium',title:'Command Execution',file:f.name,path:f.path,line:commandLine>=0?commandLine+1:undefined,desc:'A command-execution API was found. Injection risk depends on how arguments are constructed and whether a shell is involved.',code:commandLine>=0?lines[commandLine].trim().substring(0,120):'',confidence:'INFERENCE',confidenceReason:'API-use heuristic; attacker-controlled input flow and shell semantics were not proven.'});
             }
-            if(scanContent.match(/console\.(log|debug|info)\(/)){
-                var consoleCount=(scanContent.match(/console\.(log|debug|info)\(/g)||[]).length;
+            if(codeContent.match(/console\.(log|debug|info)\(/)){
+                var consoleCount=(codeContent.match(/console\.(log|debug|info)\(/g)||[]).length;
                 if(consoleCount>3){
                     var debugSeverity=isArchitectureBackendPath(f.path)?'info':'low';
                     issues.push({severity:debugSeverity,title:'Debug Statements',file:f.name,path:f.path,desc:consoleCount+' console statements found. Remove before production.',code:''});
                 }
             }
             // VBA-specific security checks
-            if(scanContent.match(/SendKeys\s*\(/i)){
+            var isVbaFile=/\.(?:vba|bas|cls|vb)$/i.test(f.path||f.name||'');
+            if(isVbaFile&&codeContent.match(/SendKeys\s*\(/i)){
                 issues.push({severity:'high',title:'SendKeys Usage',file:f.name,path:f.path,desc:'SendKeys can be exploited for code injection. Avoid using SendKeys.',code:''});
             }
-            if(!isNonProductionPath(f.path)&&scanContent.match(/Shell\s*\(/i)){
-                issues.push({severity:'high',title:'Shell Command Execution',file:f.name,path:f.path,desc:'Shell() executes system commands. Ensure input is validated.',code:''});
+            if(isVbaFile&&!isNonProductionPath(f.path)&&codeContent.match(/Shell\s*\(/i)){
+                var shellLine=codeLines.findIndex(function(l){return /Shell\s*\(/i.test(l);});
+                issues.push({severity:'high',title:'Shell Command Execution',file:f.name,path:f.path,line:shellLine>=0?shellLine+1:undefined,desc:'Shell() executes system commands. Review whether command text includes untrusted input.',code:shellLine>=0?lines[shellLine].trim().substring(0,120):'',confidence:'INFERENCE',confidenceReason:'VBA Shell API detected; command construction and user-controlled input are not proven.'});
             }
-            if(scanContent.match(/CreateObject\s*\(\s*["']WScript\.Shell["']/i)){
-                issues.push({severity:'high',title:'WScript.Shell Creation',file:f.name,path:f.path,desc:'Creating WScript.Shell object allows command execution. Use with caution.',code:''});
+            if(isVbaFile&&codeContent.match(/CreateObject\s*\(/i)&&scanContent.match(/CreateObject\s*\(\s*["']WScript\.Shell["']/i)){
+                var wscriptLine=codeLines.findIndex(function(l){return /CreateObject\s*\(/i.test(l);});
+                issues.push({severity:'high',title:'WScript.Shell Creation',file:f.name,path:f.path,line:wscriptLine>=0?wscriptLine+1:undefined,desc:'Creating WScript.Shell object allows command execution. Review how command arguments are constructed.',code:wscriptLine>=0?lines[wscriptLine].trim().substring(0,120):'',confidence:'INFERENCE',confidenceReason:'VBA automation API detected; actual command execution and input control are not proven.'});
             }
-            if(scanContent.match(/Application\.Run\s*\(/i)){
+            if(isVbaFile&&codeContent.match(/Application\.Run\s*\(/i)){
                 issues.push({severity:'medium',title:'Dynamic Code Execution',file:f.name,path:f.path,desc:'Application.Run can execute arbitrary code. Validate input.',code:''});
             }
-            if(scanContent.match(/On Error Resume Next/i)){
-                var errorResumeCount=(scanContent.match(/On Error Resume Next/gi)||[]).length;
+            if(isVbaFile&&codeContent.match(/On Error Resume Next/i)){
+                var errorResumeCount=(codeContent.match(/On Error Resume Next/gi)||[]).length;
                 if(errorResumeCount>2){
                     issues.push({severity:'medium',title:'Excessive Error Suppression',file:f.name,path:f.path,desc:errorResumeCount+' instances of "On Error Resume Next" found. This can hide bugs.',code:''});
                 }
             }
-            if(scanContent.match(/TODO|FIXME|HACK|XXX/)){
-                var todoCount=(scanContent.match(/TODO|FIXME|HACK|XXX/g)||[]).length;
-                issues.push({severity:'low',title:'Code Comments',file:f.name,path:f.path,desc:todoCount+' TODO/FIXME comments found. Address before release.',code:''});
-            }
+            // TODO/FIXME comment mining is handled by quality.js, which scans comment tokens
+            // directly. `scanContent` intentionally masks comments for security rules.
             // Python-specific security checks
             var isPyFile=f.name.endsWith('.py')||f.name.endsWith('.pyw');
-            if(isPyFile&&scanContent){
+            if(isPyFile&&codeContent){
                 // eval() and exec() - arbitrary code execution
-                if(scanContent.match(/\beval\s*\(/)){
-                    var evalLine=lines.findIndex(function(l){return l.match(/\beval\s*\(/);});
+                if(codeContent.match(/\beval\s*\(/)){
+                    var evalLine=codeLines.findIndex(function(l){return l.match(/\beval\s*\(/);});
                     issues.push({severity:'high',title:'Python eval()',file:f.name,path:f.path,line:evalLine>=0?evalLine+1:undefined,desc:'eval() executes arbitrary Python code. Use ast.literal_eval() for safe parsing.',code:evalLine>=0?lines[evalLine].trim().substring(0,80):''});
                 }
-                if(scanContent.match(/\bexec\s*\(/)){
-                    var execLine=lines.findIndex(function(l){return l.match(/\bexec\s*\(/);});
+                if(codeContent.match(/\bexec\s*\(/)){
+                    var execLine=codeLines.findIndex(function(l){return l.match(/\bexec\s*\(/);});
                     issues.push({severity:'high',title:'Python exec()',file:f.name,path:f.path,line:execLine>=0?execLine+1:undefined,desc:'exec() executes arbitrary Python code. This is almost always a security risk.',code:execLine>=0?lines[execLine].trim().substring(0,80):''});
                 }
                 // pickle - deserialization attacks
-                if(scanContent.match(/\bpickle\.load/)||scanContent.match(/\bunpickle/)){
+                if(codeContent.match(/\bpickle\.load/)||codeContent.match(/\bunpickle/)){
                     issues.push({severity:'high',title:'Pickle Deserialization',file:f.name,path:f.path,desc:'pickle.load() can execute arbitrary code from untrusted data. Use JSON or safe alternatives.',code:''});
                 }
                 // subprocess with shell=True
-                if(!isNonProductionPath(f.path)&&scanContent.match(/subprocess\.\w+\([^)]*shell\s*=\s*True/)){
+                if(!isNonProductionPath(f.path)&&codeContent.match(/subprocess\.\w+\([^)]*shell\s*=\s*True/)){
                     issues.push({severity:'high',title:'Shell Injection Risk',file:f.name,path:f.path,desc:'subprocess with shell=True is vulnerable to command injection. Use shell=False with a list of args.',code:''});
                 }
                 // os.system / os.popen - command injection
-                if(scanContent.match(/\bos\.system\s*\(/)||scanContent.match(/\bos\.popen\s*\(/)){
-                    var osLine=lines.findIndex(function(l){return l.match(/\bos\.(system|popen)\s*\(/);});
+                if(codeContent.match(/\bos\.system\s*\(/)||codeContent.match(/\bos\.popen\s*\(/)){
+                    var osLine=codeLines.findIndex(function(l){return l.match(/\bos\.(system|popen)\s*\(/);});
                     issues.push({severity:'high',title:'OS Command Execution',file:f.name,path:f.path,line:osLine>=0?osLine+1:undefined,desc:'os.system()/os.popen() are vulnerable to command injection. Use subprocess with shell=False.',code:osLine>=0?lines[osLine].trim().substring(0,80):''});
                 }
                 // __import__ - dynamic imports
-                if(scanContent.match(/__import__\s*\(/)){
+                if(codeContent.match(/__import__\s*\(/)){
                     issues.push({severity:'medium',title:'Dynamic Import',file:f.name,path:f.path,desc:'__import__() with user input can load arbitrary modules. Validate module names against an allowlist.',code:''});
                 }
                 // Bare except clauses
-                var bareExcepts=(scanContent.match(/\bexcept\s*:/g)||[]).length;
+                var bareExcepts=(codeContent.match(/\bexcept\s*:/g)||[]).length;
                 if(bareExcepts>2){
                     issues.push({severity:'medium',title:'Bare Except Clauses',file:f.name,path:f.path,desc:bareExcepts+' bare except: clauses found. These catch all exceptions including SystemExit and KeyboardInterrupt.',code:''});
                 }
                 // assert in non-test files
                 if(!f.name.includes('test')&&!f.path.includes('test')){
-                    var assertCount=(scanContent.match(/\bassert\s+/g)||[]).length;
+                    var assertCount=(codeContent.match(/\bassert\s+/g)||[]).length;
                     if(assertCount>5){
                         issues.push({severity:'low',title:'Assert in Production',file:f.name,path:f.path,desc:assertCount+' assert statements found. Assertions are stripped with python -O. Use proper validation.',code:''});
                     }
                 }
                 // Hardcoded DEBUG = True
-                if(scanContent.match(/\bDEBUG\s*=\s*True\b/)){
+                if(codeContent.match(/\bDEBUG\s*=\s*True\b/)){
                     issues.push({severity:'medium',title:'Debug Mode Enabled',file:f.name,path:f.path,desc:'DEBUG = True found. Ensure this is disabled in production.',code:''});
                 }
             }
@@ -1130,8 +1389,10 @@ const Parser={
         return issues.sort(function(a,b){var sev={high:0,medium:1,low:2,info:3};return sev[a.severity]-sev[b.severity];});
     },
     // AST-based function extraction - accurate detection without false positives
-    extract:function(content,filename){
+    extract:function(content,filename,diagnostics){
         var fns=[];
+        diagnostics=diagnostics||{};
+        diagnostics.mode='heuristic-regex';
         var lines=content.split('\n');
 
         // Helper to extract code snippet for a function
@@ -1150,29 +1411,71 @@ const Parser={
         var seenAtLine={};
         function addFn(fnObj){
             var key=fnObj.name+'@'+fnObj.line;
-            if(!seenAtLine[key]){
-                seenAtLine[key]=true;
-                fns.push(fnObj);
+            // A legacy regex hit may identify a Java method correctly but
+            // stop its span on the declaration line. The later masked lexical
+            // pass can supply a properly bounded body for the *same* symbol.
+            // Upgrade only on stronger evidence, never enlarge an AST result
+            // or merge different methods that merely share a name.
+            var existingIndex=seenAtLine[key];
+            if (existingIndex !== undefined) {
+                var prior=fns[existingIndex];
+                var priorEnd=Number(prior.endLine)||Number(prior.line)||0;
+                var nextEnd=Number(fnObj.endLine)||Number(fnObj.line)||0;
+                var eligible=fnObj.extractionProvenance==='language-aware-lexical' &&
+                    prior.extractionProvenance!=='tree-sitter-ast' &&
+                    prior.extractionProvenance!=='ast' &&
+                    fnObj.endLineConfidence==='bounded-heuristic' &&
+                    nextEnd>priorEnd && nextEnd<=lines.length &&
+                    fnObj.file===prior.file && fnObj.line===prior.line;
+                if(eligible) {
+                    fns[existingIndex]={...prior,...fnObj};
+                }
+                return;
             }
+            seenAtLine[key]=fns.length;
+            fns.push(fnObj);
         }
 
         var scriptBlocks=Parser.getEmbeddedCodeBlocks(content,filename,{includeHandlers:false}).filter(function(block){
             return block.kind==='script';
         });
         if(scriptBlocks.length){
+            var blockModes=[];
             scriptBlocks.forEach(function(block){
-                Parser.extractJSFunctions(block.content,filename,block.offset,addFn,extractCode,block.isTS);
+                var blockDiagnostics={};
+                Parser.extractJSFunctions(block.content,filename,block.offset,addFn,extractCode,block.isTS,blockDiagnostics);
+                if(blockDiagnostics.mode)blockModes.push(blockDiagnostics.mode);
             });
+            diagnostics.mode=blockModes.length&&blockModes.every(function(mode){return mode==='ast';})?'ast':
+                (blockModes.some(function(mode){return mode!=='ast';})?'regex-fallback':'embedded-script');
             return fns;
         }
         if(Parser.isScriptContainer(filename)){
+            diagnostics.mode='embedded-script-not-found';
             return fns;
+        }
+
+        // Only use a real syntax tree if an external Tree-sitter runtime and
+        // grammar were explicitly configured and successfully initialized.
+        // Lexical fallback remains honest when unavailable or unparsable.
+        const astParser = Parser.getLoadedTreeSitterParser(filename);
+        if (astParser && !/\.(?:js|jsx|mjs|cjs|ts|tsx|py|pyw|pyi)$/i.test(filename)) {
+            const treeExtraction = extractLoadedTreeSitterFunctions(content, filename, astParser);
+            if (treeExtraction.status === 'complete' && treeExtraction.functions.length) {
+                treeExtraction.functions.forEach(addFn);
+                diagnostics.mode = 'tree-sitter-ast';
+                diagnostics.language = identifyCodeLanguage(filename);
+                diagnostics.syntaxTreeNodes = treeExtraction.visitedNodes;
+                diagnostics.semantics = treeExtraction.semantics;
+                return fns;
+            }
+            diagnostics.astFallback = treeExtraction.status;
         }
 
         // Check file type
         var ext=filename.toLowerCase();
         var isJS=ext.endsWith('.js')||ext.endsWith('.jsx')||ext.endsWith('.mjs')||ext.endsWith('.cjs');
-        var isTS=ext.endsWith('.ts')||ext.endsWith('.tsx');
+        var isTS=ext.endsWith('.ts')||ext.endsWith('.tsx')||ext.endsWith('.mts')||ext.endsWith('.cts');
         var isVue=ext.endsWith('.vue');
         var isSvelte=ext.endsWith('.svelte');
         var isPython=ext.endsWith('.py')||ext.endsWith('.pyw')||ext.endsWith('.pyi');
@@ -1199,7 +1502,8 @@ const Parser={
         }
 
         // Try AST parsing for JS/TS files using real parsers
-        if((isJS||isTS)&&typeof acorn!=='undefined'){
+        if(isJS||isTS){
+          if(typeof acorn!=='undefined'){
             var parseContent=scriptContent;
             var parseSuccess=false;
 
@@ -1241,10 +1545,12 @@ const Parser={
                 parseSuccess=true;
 
                 // Walk the AST to find ALL function definitions
-                function walk(node,scope,parentIsExport){
+                function walk(node,scope,parentIsExport,currentClass){
                     if(!node||typeof node!=='object')return;
 
                     var isTopLevel=(scope===0);
+                    var activeClass=(node.type==='ClassDeclaration'||node.type==='ClassExpression')
+                        ? ((node.id&&node.id.name)||currentClass||null) : (currentClass||null);
 
                     // FunctionDeclaration: function foo() {}
                     if(node.type==='FunctionDeclaration'&&node.id&&node.id.name){
@@ -1255,6 +1561,7 @@ const Parser={
                             file:filename,
                             line:line,
                             code:extractCode(line,endLine),
+                            endLine:endLine,
                             isTopLevel:isTopLevel,
                             isExported:parentIsExport||false,
                             type:'function'
@@ -1276,6 +1583,7 @@ const Parser={
                                         file:filename,
                                         line:line,
                                         code:extractCode(line,endLine),
+                            endLine:endLine,
                                         isTopLevel:isTopLevel,
                                         isExported:parentIsExport||false,
                                         type:init.type==='ArrowFunctionExpression'?'arrow':'function'
@@ -1296,10 +1604,12 @@ const Parser={
                                 file:filename,
                                 line:line,
                                 code:extractCode(line,endLine),
+                            endLine:endLine,
                                 isTopLevel:false,
                                 isExported:false,
                                 type:'method',
                                 isClassMethod:true,
+                                className:activeClass||undefined,
                                 isGetter:node.kind==='get',
                                 isSetter:node.kind==='set'
                             });
@@ -1317,6 +1627,7 @@ const Parser={
                                 file:filename,
                                 line:line,
                                 code:extractCode(line,endLine),
+                            endLine:endLine,
                                 isTopLevel:false,
                                 isExported:false,
                                 type:'method'
@@ -1337,6 +1648,7 @@ const Parser={
                                     file:filename,
                                     line:line,
                                     code:extractCode(line,endLine),
+                            endLine:endLine,
                                     isTopLevel:false,
                                     isExported:false,
                                     type:'method'
@@ -1350,7 +1662,7 @@ const Parser={
                     if(node.type==='ExportNamedDeclaration'||node.type==='ExportDefaultDeclaration'){
                         nextIsExport=true;
                         if(node.declaration){
-                            walk(node.declaration,scope,true);
+                            walk(node.declaration,scope,true,activeClass);
                             return;
                         }
                     }
@@ -1366,61 +1678,80 @@ const Parser={
                     for(var key in node){
                         if(key==='loc'||key==='range'||key==='start'||key==='end'||key==='raw')continue;
                         var child=node[key];
+                        // Class identity applies while traversing a class body,
+                        // but does not leak into local functions declared inside a method.
+                        var childClass = activeClass;
+                        if(node.type==='MethodDefinition'&&key==='value')childClass=null;
+                        if(node.type==='FunctionDeclaration'||node.type==='FunctionExpression'||node.type==='ArrowFunctionExpression')childClass=null;
                         if(Array.isArray(child)){
-                            child.forEach(function(c){walk(c,newScope,nextIsExport);});
+                            child.forEach(function(c){walk(c,newScope,nextIsExport,childClass);});
                         }else if(child&&typeof child==='object'&&child.type){
-                            walk(child,newScope,nextIsExport);
+                            walk(child,newScope,nextIsExport,childClass);
                         }
                     }
                 }
 
-                walk(ast,0,false);
+                walk(ast,0,false,null);
 
             }catch(e){
                 // AST parsing failed
                 parseSuccess=false;
             }
 
-            // If AST parsing failed, use comprehensive regex fallback
+            // Record whether this file's function extraction came from the AST
+            // or fell back to regex, so repository coverage can report uncertainty.
+            diagnostics.mode=parseSuccess?'ast':'regex-fallback';
             if(!parseSuccess){
                 Parser.extractWithRegex(scriptContent,filename,scriptOffset,addFn,extractCode);
             }
+          } else {
+            // Keep JavaScript/TypeScript extraction useful in environments where
+            // the optional Acorn global is not loaded. This path is explicitly
+            // reported as heuristic fallback and never claims AST coverage.
+            diagnostics.mode='regex-fallback';
+            Parser.extractWithRegex(scriptContent,filename,scriptOffset,addFn,extractCode);
+          }
         }else if(isPython){
+            diagnostics.mode='python-regex';
             // Python: extract classes, functions, async functions, decorators, and methods
             var currentClass=null;
             var classIndent=-1;
             var decorators=[];
+            var currentFunctionIndent=-1;
+            var pythonScanLines=Parser.stripPythonNonCode(content).split('\n');
             lines.forEach(function(line,idx){
-                var trimmed=line.trimStart();
-                var indent=(line.match(/^(\s*)/)||['',''])[1].length;
+                var scanLine=pythonScanLines[idx]||'';
+                var trimmed=scanLine.trimStart();
+                var indent=(scanLine.match(/^(\s*)/)||['',''])[1].length;
 
                 // Track decorators
                 if(trimmed.match(/^@\w/)){
-                    decorators.push(trimmed);
+                    decorators.push(line.trim());
                     return;
                 }
 
                 // Detect class definitions
-                var classMatch=line.match(/^(\s*)class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[\(:]?/);
+                var classMatch=scanLine.match(/^(\s*)class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[\(:]?/);
                 if(classMatch){
                     var cIndent=classMatch[1].length;
                     var className=classMatch[2];
                     var cEndLine=idx+1;
                     for(var i=idx+1;i<lines.length;i++){
-                        var nl=lines[i];
-                        if(nl.trim()===''||nl.match(/^\s*#/))continue;
+                        var nl=pythonScanLines[i]||'';
+                        if(nl.trim()==='')continue;
                         var ni=(nl.match(/^(\s*)/)||['',''])[1].length;
                         if(ni<=cIndent&&nl.trim()!==''){cEndLine=i;break;}
                         cEndLine=i+1;
                     }
                     var hasDecorator=decorators.length>0;
                     var isDataclass=decorators.some(function(d){return d.includes('dataclass');});
-                    var isABC=line.includes('ABC')||line.includes('ABCMeta');
+                    var isABC=scanLine.includes('ABC')||scanLine.includes('ABCMeta');
                     addFn({
                         name:className,
                         file:filename,
                         line:idx+1,
                         code:extractCode(idx+1,Math.min(idx+20,cEndLine)),
+                        endLine:cEndLine,
                         isTopLevel:cIndent===0,
                         isExported:cIndent===0,
                         type:isDataclass?'dataclass':isABC?'abstract_class':'class',
@@ -1428,27 +1759,33 @@ const Parser={
                     });
                     currentClass=className;
                     classIndent=cIndent;
+                    currentFunctionIndent=-1;
                     decorators=[];
                     return;
                 }
 
                 // Reset class context when dedented
-                if(currentClass!==null&&indent<=classIndent&&trimmed!==''&&!trimmed.startsWith('#')){
+                if(currentClass!==null&&indent<=classIndent&&trimmed!==''){
                     currentClass=null;
                     classIndent=-1;
+                    currentFunctionIndent=-1;
                 }
 
                 // Detect function/method definitions (including async def)
-                var m=line.match(/^(\s*)(?:async\s+)?def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/);
+                var m=scanLine.match(/^(\s*)(?:async\s+)?def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/);
                 if(m){
                     var fIndent=m[1].length;
                     var name=m[2];
-                    var isAsync=line.match(/\basync\s+def\b/)!==null;
-                    var isMethod=currentClass!==null&&fIndent>classIndent;
+                    var isAsync=scanLine.match(/\basync\s+def\b/)!==null;
+                    // A nested def inside a method is not itself a class method.
+                    // Track the last enclosing def's indentation before binding.
+                    var nestedWithinFunction=currentFunctionIndent>=0&&fIndent>currentFunctionIndent;
+                    var isMethod=currentClass!==null&&fIndent>classIndent&&!nestedWithinFunction;
+                    currentFunctionIndent=fIndent;
                     var isDunder=name.startsWith('__')&&name.endsWith('__');
                     var isPrivate=name.startsWith('_')&&!isDunder;
-                    var isSelf=line.match(/def\s+\w+\s*\(\s*self[\s,)]/);
-                    var isCls=line.match(/def\s+\w+\s*\(\s*cls[\s,)]/);
+                    var isSelf=scanLine.match(/def\s+\w+\s*\(\s*self[\s,)]/);
+                    var isCls=scanLine.match(/def\s+\w+\s*\(\s*cls[\s,)]/);
                     var hasDecorator=decorators.length>0;
                     var isProperty=decorators.some(function(d){return d.includes('@property');});
                     var isStaticmethod=decorators.some(function(d){return d.includes('@staticmethod');});
@@ -1456,8 +1793,8 @@ const Parser={
 
                     var endLine=idx+1;
                     for(var i=idx+1;i<lines.length;i++){
-                        var nextLine=lines[i];
-                        if(nextLine.trim()===''||nextLine.match(/^\s*#/))continue;
+                        var nextLine=pythonScanLines[i]||'';
+                        if(nextLine.trim()==='')continue;
                         var nextIndent=(nextLine.match(/^(\s*)/)||['',''])[1].length;
                         if(nextIndent<=fIndent&&nextLine.trim()!==''){endLine=i;break;}
                         endLine=i+1;
@@ -1477,6 +1814,7 @@ const Parser={
                         file:filename,
                         line:idx+1,
                         code:extractCode(idx+1,endLine),
+                        endLine:endLine,
                         isTopLevel:fIndent===0,
                         isExported:fIndent===0&&!isPrivate,
                         isClassMethod:isMethod,
@@ -1494,12 +1832,26 @@ const Parser={
             });
         }else{
             // Other languages: use language-specific regex
+            diagnostics.mode='language-regex';
             Parser.extractOtherLanguages(content,filename,addFn,extractCode);
         }
 
          // Additive pass: annotation/keyword-generated methods (Lombok, data/case class, attr_*, @dataclass)
         extractSyntheticAccessors(content, filename, addFn, extractCode);
 
+        // Deepen languages that previously had sparse/no declarations. Keep
+        // existing AST/Python results authoritative at identical name+line.
+        // Every supplemented symbol explicitly declares lexical provenance.
+        if (!isJS && !isTS && !isPython) {
+            const supplemental = extractLanguageFunctions(content, filename);
+            if (supplemental.mode === 'language-aware-lexical') {
+                supplemental.functions.forEach(addFn);
+                diagnostics.mode = 'language-aware-lexical';
+                diagnostics.language = supplemental.language;
+                diagnostics.lexicalSupplementCount = supplemental.functions.length;
+                diagnostics.semantics = 'Source-token declaration extraction, not compiler-grade binding or runtime proof.';
+            }
+        }
         return fns;
     },
 
@@ -1632,102 +1984,137 @@ const Parser={
     // Comprehensive regex fallback for JS/TS when AST fails
     extractWithRegex:function(content,filename,offset,addFn,extractCode){
         var lines=content.split('\n');
-
+        var scanLines=maskSourceNonCode(content,filename).split('\n');
+        var lineOffset=Number(offset)||0;
         lines.forEach(function(line,idx){
-            var lineNum=idx+1+offset;
+            var lineNum=idx+1+lineOffset;
+            var scanLine=scanLines[idx]||'';
             var m;
+            function endLine(name,kind){
+                return estimateBracedEndLine(content,idx+1,name,kind,filename)+lineOffset;
+            }
 
-            // Named function declarations (capture export keyword for isExported)
-            if((m=line.match(/(export\s+(?:default\s+)?)?(?:async\s+)?function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(/)))
-                addFn({name:m[2],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,isExported:!!m[1],type:'function'});
+            // Named function declarations (capture export keyword for isExported).
+            if((m=scanLine.match(/(export\s+(?:default\s+)?)?(?:async\s+)?function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(/)))
+                addFn({name:m[2],file:filename,line:lineNum,code:extractCode(lineNum,endLine(m[2],'function')),endLine:endLine(m[2],'function'),isTopLevel:true,isExported:!!m[1],type:'function'});
 
-            // Arrow functions assigned to const/let/var at START of meaningful content
-            // Must have = directly followed by arrow function pattern
-            if((m=line.match(/(export\s+)?(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>/)))
-                addFn({name:m[2],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,isExported:!!m[1],type:'arrow'});
+            // Arrow functions assigned to const/let/var at START of meaningful content.
+            if((m=scanLine.match(/(export\s+)?(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>/)))
+                addFn({name:m[2],file:filename,line:lineNum,code:extractCode(lineNum,endLine(m[2],'arrow')),endLine:endLine(m[2],'arrow'),isTopLevel:true,isExported:!!m[1],type:'arrow'});
 
             // Arrow functions with single param (no parens): const foo = x =>
-            if((m=line.match(/(export\s+)?(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(?:async\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=>/)))
-                addFn({name:m[2],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,isExported:!!m[1],type:'arrow'});
+            if((m=scanLine.match(/(export\s+)?(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(?:async\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=>/)))
+                addFn({name:m[2],file:filename,line:lineNum,code:extractCode(lineNum,endLine(m[2],'arrow')),endLine:endLine(m[2],'arrow'),isTopLevel:true,isExported:!!m[1],type:'arrow'});
 
             // Function expressions: const foo = function
-            if((m=line.match(/(export\s+)?(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(?:async\s+)?function\s*[(\w]/)))
-                addFn({name:m[2],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,isExported:!!m[1],type:'function'});
+            if((m=scanLine.match(/(export\s+)?(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(?:async\s+)?function\s*[(\w]/)))
+                addFn({name:m[2],file:filename,line:lineNum,code:extractCode(lineNum,endLine(m[2],'function')),endLine:endLine(m[2],'function'),isTopLevel:true,isExported:!!m[1],type:'function'});
 
             // Class methods (inside class body): methodName() { or async methodName() {
-            if((m=line.match(/^\s+(?:async\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\([^)]*\)\s*\{/))&&!line.match(/^s*(if|for|while|switch|catch|function|const|let|var)/))
-                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:false,type:'method',isClassMethod:true});
+            if((m=scanLine.match(/^\s+(?:async\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\([^)]*\)\s*\{/))&&!scanLine.match(/^\s*(if|for|while|switch|catch|function|const|let|var)\b/))
+                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum,endLine(m[1],'method')),endLine:endLine(m[1],'method'),isTopLevel:false,type:'method',isClassMethod:true});
 
-            // Object method shorthand (indented): foo() { or foo: function
-            if((m=line.match(/^\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:\s*(?:async\s+)?function/)))
-                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:false,type:'method'});
+            // Object method shorthand: foo() { or foo: function
+            if((m=scanLine.match(/^\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:\s*(?:async\s+)?function/)))
+                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum,endLine(m[1],'function')),endLine:endLine(m[1],'function'),isTopLevel:false,type:'method'});
 
             // Object property arrow: foo: () =>
-            if((m=line.match(/^\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:\s*(?:async\s*)?\([^)]*\)\s*=>/)))
-                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:false,type:'method'});
+            if((m=scanLine.match(/^\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:\s*(?:async\s*)?\([^)]*\)\s*=>/)))
+                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum,endLine(m[1],'arrow')),endLine:endLine(m[1],'arrow'),isTopLevel:false,type:'method'});
         });
     },
 
-    // Extract functions from other languages
+    // Extract functions from other languages (best-effort regex fallback).
+    // Scan a comment/string-masked view to avoid declarations fabricated by
+    // examples in comments and strings. This is still not a compiler parser.
     extractOtherLanguages:function(content,filename,addFn,extractCode){
         var lines=content.split('\n');
+        var scanLines=maskLanguageNonCode(content, identifyCodeLanguage(filename)).split('\n');
+        var jvmLike=/\.(?:java|kt|kts|cs|scala|groovy)$/i.test(filename||'');
+        var sourceBaseName=String(filename||'').split(/[\/]/).pop().replace(/\.[^.]+$/,'');
+        var offsets=[], position=0;
+        scanLines.forEach(function(row){offsets.push(position); position+=row.length+1;});
+        var maskedSource=scanLines.join('\n');
+        function nearestDeclaredType(lineIndex){
+            for(var prior=lineIndex;prior>=0;prior--){
+                var declaration=(scanLines[prior]||'').match(/\b(?:class|record|enum|interface|object|trait|struct)\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
+                if(declaration)return declaration[1];
+            }
+            return sourceBaseName;
+        }
 
         lines.forEach(function(line,idx){
             var lineNum=idx+1;
+            var scanLine=scanLines[idx]||'';
             var m;
+            // Type declarations are not callable functions. The previous C/C++
+            // fallback pattern also matched Java records such as `record RoleSeed(...)`.
+            if(/\b(?:class|record|enum|interface|object|trait|struct|type)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*(?:[<(]|\{|$)/.test(scanLine))return;
+            function addEstimated(name,type,isTopLevel,extra){
+                var end=estimateBracedEndLine(content,lineNum,name,type,filename);
+                addFn({name:name,file:filename,line:lineNum,code:extractCode(lineNum,end),endLine:end,isTopLevel:!!isTopLevel,type:type,...(extra||{})});
+            }
 
             // Go: func name(
-            if((m=line.match(/^func\s+(?:\([^)]+\)\s*)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/)))
-                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,type:'function'});
+            if((m=scanLine.match(/^func\s+(?:\([^)]+\)\s*)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/)))
+                addEstimated(m[1],'function',true);
 
-            // Java/C#/Kotlin: public void methodName( or similar
-            if((m=line.match(/(?:public|private|protected|internal|static|final|override|virtual|abstract|async)\s+(?:(?:static|final|override|virtual|abstract|async)\s+)*(?:\w+\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/)))
-                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:false,type:'method'});
+            // Java/C#/Kotlin: public void methodName( or similar. A constructor
+            // has no return type and shares the enclosing class name; skip it as
+            // a normal method node so it cannot pollute naming/dead-code metrics.
+            if((m=scanLine.match(/(?:public|private|protected|internal|static|final|override|virtual|abstract|async)\s+(?:(?:static|final|override|virtual|abstract|async)\s+)*(?:\w+\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/))){
+                var constructorName=nearestDeclaredType(idx-1);
+                var bareConstructor=scanLine.match(/^\s*(?:(?:public|protected|private)\s+)?([A-Z_$][A-Za-z0-9_$]*)\s*\(/);
+                var validJava=!/\.java$/i.test(filename||'') || isLikelyJavaDeclaration(scanLines,idx,m[1],maskedSource,offsets);
+                if(validJava&&!(jvmLike&&((m[1]===constructorName)||(m[1]===sourceBaseName&&bareConstructor))))addEstimated(m[1],'method',false,{className:constructorName,isClassMethod:true});
+            }
 
             // Kotlin: fun name(
-            if((m=line.match(/(?:suspend\s+)?fun\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[<(]/)))
-                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,type:'function'});
+            if((m=scanLine.match(/(?:suspend\s+)?fun\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[<(]/)))
+                addEstimated(m[1],'function',true);
 
-            // Ruby: def name
-            if((m=line.match(/^\s*def\s+([a-zA-Z_][a-zA-Z0-9_?!]*)/)))
-                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,type:'function'});
+            // Ruby: def name (Ruby `end` blocks do not use braces, so line is the safe range.)
+            if((m=scanLine.match(/^\s*def\s+([a-zA-Z_][a-zA-Z0-9_?!]*)/)))
+                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),endLine:lineNum,isTopLevel:true,type:'function',endLineConfidence:'declaration-line-only'});
 
             // Rust: fn name or pub fn name
-            if((m=line.match(/(?:pub\s+)?(?:async\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[<(]/)))
-                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,type:'function'});
+            if((m=scanLine.match(/(?:pub\s+)?(?:async\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[<(]/)))
+                addEstimated(m[1],'function',true);
 
             // PHP: function name( or public function name(
-            if((m=line.match(/(?:public|private|protected|static)?\s*function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/)))
-                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,type:'function'});
+            if((m=scanLine.match(/(?:public|private|protected|static)?\s*function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/)))
+                addEstimated(m[1],'function',true);
 
             // C/C++: type name( at start or with visibility
-            if((m=line.match(/^(?:static\s+)?(?:inline\s+)?(?:virtual\s+)?(?:\w+\s+)+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^;]*$/)))
-                if(!line.match(/^\s*(if|for|while|switch|return|sizeof|typeof)/))
-                    addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,type:'function'});
+            if(/\.(?:c|cc|cpp|cxx|h|hpp|hh|hxx)$/i.test(filename||'') && (m=scanLine.match(/^(?:static\s+)?(?:inline\s+)?(?:virtual\s+)?(?:\w+\s+)+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^;]*$/)))
+                if(!scanLine.match(/^\s*(if|for|while|switch|return|sizeof|typeof)\b/))
+                    addEstimated(m[1],'function',true);
 
             // Swift: func name
-            if((m=line.match(/(?:public|private|internal|fileprivate|open)?\s*(?:static\s+)?(?:class\s+)?func\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[<(]/)))
-                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,type:'function'});
+            if((m=scanLine.match(/(?:public|private|internal|fileprivate|open)?\s*(?:static\s+)?(?:class\s+)?func\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[<(]/)))
+                addEstimated(m[1],'function',true);
 
             // Scala: def name
-            if((m=line.match(/\bdef\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[(\[]/)))
-                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,type:'function'});
+            if((m=scanLine.match(/\bdef\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[(\[]/)))
+                addEstimated(m[1],'function',true);
 
             // Elixir: def name or defp name
-            if((m=line.match(/\bdefp?\s+([a-zA-Z_][a-zA-Z0-9_?!]*)/)))
-                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,type:'function'});
+            if((m=scanLine.match(/\bdefp?\s+([a-zA-Z_][a-zA-Z0-9_?!]*)/)))
+                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),endLine:lineNum,isTopLevel:true,type:'function',endLineConfidence:'declaration-line-only'});
 
             // Lua: function name( or local function name(
-            if((m=line.match(/(?:local\s+)?function\s+([a-zA-Z_][a-zA-Z0-9_.:]*)\s*\(/)))
-                addFn({name:m[1].split(/[.:]/).pop(),file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,type:'function'});
+            if((m=scanLine.match(/(?:local\s+)?function\s+([a-zA-Z_][a-zA-Z0-9_.:]*)\s*\(/)))
+                addEstimated(m[1].split(/[.:]/).pop(),'function',true);
 
             // VBA: Sub Name() or Function Name()
-            if((m=line.match(/(?:Public|Private|Friend)?\s*(?:Sub|Function)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/i)))
-                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,type:'function'});
+            if((m=scanLine.match(/(?:Public|Private|Friend)?\s*(?:Sub|Function)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/i)))
+                addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),endLine:lineNum,isTopLevel:true,type:'function',endLineConfidence:'declaration-line-only'});
         });
     },
-    extractJSFunctions:function(content,filename,offset,addFn,extractCode,isTS){
-        if(!content||!content.trim())return;
+
+    extractJSFunctions:function(content,filename,offset,addFn,extractCode,isTS,diagnostics){
+        diagnostics=diagnostics||{};
+        if(!content||!content.trim()){diagnostics.mode='empty';return;}
         if(typeof acorn!=='undefined'){
             var parseContent=content;
             var parseSuccess=false;
@@ -1776,6 +2163,7 @@ const Parser={
                             file:filename,
                             line:line,
                             code:extractCode(line,endLine),
+                            endLine:endLine,
                             isTopLevel:isTopLevel,
                             isExported:parentIsExport||false,
                             type:'function'
@@ -1794,6 +2182,7 @@ const Parser={
                                         file:filename,
                                         line:line,
                                         code:extractCode(line,endLine),
+                            endLine:endLine,
                                         isTopLevel:isTopLevel,
                                         isExported:parentIsExport||false,
                                         type:init.type==='ArrowFunctionExpression'?'arrow':'function'
@@ -1892,12 +2281,14 @@ const Parser={
                 parseSuccess=false;
             }
 
+            diagnostics.mode=parseSuccess?'ast':'regex-fallback';
             if(!parseSuccess){
                 Parser.extractWithRegex(content,filename,offset,addFn,extractCode);
             }
             return;
         }
 
+        diagnostics.mode='regex-fallback';
         Parser.extractWithRegex(content,filename,offset,addFn,extractCode);
     },
     findJSCalls:function(content,fnNames,defLines,options){
@@ -2090,7 +2481,7 @@ const Parser={
             var p=String(file.path||file.name||'').replace(/\\/g,'/').replace(/^\/+/,'');
             if(p)pathMap[p.toLowerCase()]=p;
         });
-        var exts=['','.js','.jsx','.ts','.tsx','.mjs','.cjs','.vue','.svelte','.py','.pyw','.pyi','.vba','.bas','.cls','/index.js','/index.jsx','/index.ts','/index.tsx','/__init__.py'];
+        var exts=['','.js','.jsx','.ts','.tsx','.mts','.cts','.mjs','.cjs','.vue','.svelte','.py','.pyw','.pyi','.vba','.bas','.cls','/index.js','/index.jsx','/index.ts','/index.tsx','/__init__.py'];
         for(var i=0;i<candidates.length;i++){
             for(var j=0;j<exts.length;j++){
                 var candidate=normalizePath(candidates[i]+exts[j]).toLowerCase();
@@ -2212,8 +2603,9 @@ const Parser={
         var calls=Object.create(null);
         var refs=Object.create(null);
         var candidateSet=new Set(fnNames||[]);
-        var source=String(content||'');
+        var rawSource=String(content||'');
         var opts=options||{};
+        var source=opts.isPython ? Parser.stripPythonNonCode(rawSource) : maskNonCodeForFallback(rawSource,opts);
         fnNames.forEach(function(fn){calls[fn]=0;refs[fn]=0;});
         if(!source||!candidateSet.size)return calls;
 
@@ -2236,6 +2628,16 @@ const Parser={
             if(/\b(function|class|def)\s*$/.test(prefix))isDefinition=true;
             if(opts.isPython&&/\b(async\s+def|def|class)\s*$/.test(prefix))isDefinition=true;
             if(opts.isVBA&&/\b(Sub|Function)\s+$/i.test(prefix))isDefinition=true;
+            if(opts.isJava&&nextChar==='('){
+                // The token fallback must not count `public void charge(` as a call
+                // to charge. Strip common Java modifiers/annotations and recognize a
+                // return-type + method-name prefix, while excluding statement keywords.
+                var javaPrefix=prefix
+                    .replace(/^\s*(?:@[A-Za-z_$][\w.$]*(?:\([^)]*\))?\s*)*/, '')
+                    .replace(/^\s*(?:(?:public|protected|private|static|final|abstract|synchronized|native|strictfp|default|transient|volatile|sealed|non-sealed)\s+)*/, '');
+                var isJavaStatementPrefix=/^\s*(?:return|throw|new|if|while|for|switch|case|catch|yield|assert|do|else)\b/.test(prefix);
+                if(!isJavaStatementPrefix&&/^\s*(?:<[^>]+>\s*)?(?:[A-Za-z_$][\w.$<>?,\[\]|&]*\s+)+$/.test(javaPrefix))isDefinition=true;
+            }
             if(nextChar==='('&&!isDefinition){
                 calls[name]++;
             }else if(!isDefinition&&'[,[:(={'.indexOf(prevChar)>=0&&' ,])};\n\r'.indexOf(nextChar)>=0){
@@ -2256,17 +2658,11 @@ const Parser={
             }
         }
 
-        if(opts.isPython){
-            var importRe=/^(?:from\s+\S+\s+import\s+(?:\([^)]+\)|[^\n]+)|import\s+[^\n]+)$/gm;
-            while((match=importRe.exec(source))!==null){
-                var importWords=match[0].match(/\b[a-zA-Z_]\w*\b/g)||[];
-                importWords.forEach(function(word){if(candidateSet.has(word))refs[word]++;});
-            }
-        }
-
         if(opts.isVBA){
+            // VBA can dispatch macros by a string name; this is intentionally
+            // checked against the original source after ordinary string masking.
             var vbaRunRe=/Application\.Run\s*["']([A-Za-z_]\w*)["']/gi;
-            while((match=vbaRunRe.exec(source))!==null){
+            while((match=vbaRunRe.exec(rawSource))!==null){
                 if(candidateSet.has(match[1]))calls[match[1]]++;
             }
         }
@@ -2499,7 +2895,7 @@ const Parser={
         }
 
         // Fallback: regex-based but more careful
-        return Parser.countCandidateCalls(content,fnNames,{isJS:isJS,isVBA:isVBA});
+        return Parser.countCandidateCalls(content,fnNames,{isJS:isJS,isVBA:isVBA,isJava:ext==='java'});
     }
 };
 
@@ -2520,9 +2916,13 @@ function calcBlast(fileId,conns,files){
         exportedTo[src].add(tgt);
         if(!importedFrom[tgt])importedFrom[tgt]=new Set();
         importedFrom[tgt].add(src);
-        if(!exportedFns[src])exportedFns[src]=new Map();
-        var fnMap=exportedFns[src];
-        fnMap.set(c.fn,(fnMap.get(c.fn)||0)+(c.count||1));
+        // Module dependency edges participate in file blast radius but are
+        // not function-call evidence, so do not count them as used functions.
+        if(c.type!=='dependency'){
+            if(!exportedFns[src])exportedFns[src]=new Map();
+            var fnMap=exportedFns[src];
+            fnMap.set(c.fn,(fnMap.get(c.fn)||0)+(c.count||1));
+        }
     });
 
     // 1. Direct dependents (files that directly import from this file)

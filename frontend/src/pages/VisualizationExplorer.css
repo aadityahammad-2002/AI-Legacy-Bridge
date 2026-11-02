@@ -573,3 +573,248 @@
 .viz-details__ai-btn:hover {
     transform: translateY(-1px);
 }
+
+/* Collapsible analysis coverage: keep the title and status visible while
+   allowing the long diagnostics to expand vertically only on demand. */
+.viz-coverage--collapsible {
+    min-width: 0;
+}
+
+.viz-coverage--collapsible > .viz-coverage__heading {
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    margin: -4px -5px;
+    padding: 4px 5px;
+    border-radius: 6px;
+}
+
+.viz-coverage--collapsible > .viz-coverage__heading::-webkit-details-marker {
+    display: none;
+}
+
+.viz-coverage--collapsible > .viz-coverage__heading::marker {
+    content: '';
+}
+
+.viz-coverage--collapsible > .viz-coverage__heading:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.viz-coverage--collapsible > .viz-coverage__heading:focus-visible {
+    outline: 2px solid var(--lb-accent);
+    outline-offset: 2px;
+}
+
+.viz-coverage--collapsible > .viz-coverage__heading .viz-panel__title {
+    margin: 0;
+}
+
+.viz-coverage__heading-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex-shrink: 0;
+}
+
+.viz-coverage__chevron {
+    flex-shrink: 0;
+    color: var(--lb-text-muted);
+    transition: transform 180ms ease;
+}
+
+.viz-coverage--collapsible[open] .viz-coverage__chevron {
+    transform: rotate(180deg);
+}
+
+.viz-coverage--collapsible .viz-coverage__content {
+    padding-top: 12px;
+}
+
+/* Progressive enhancement in browsers supporting animated details content. */
+@supports (interpolate-size: allow-keywords) {
+    .viz-coverage--collapsible {
+        interpolate-size: allow-keywords;
+    }
+    .viz-coverage--collapsible::details-content {
+        block-size: 0;
+        overflow: hidden;
+        transition: block-size 200ms ease, content-visibility 200ms allow-discrete;
+    }
+    .viz-coverage--collapsible[open]::details-content {
+        block-size: auto;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .viz-coverage__chevron,
+    .viz-coverage--collapsible::details-content {
+        transition: none;
+    }
+}
+
+/* Analysis coverage deliberately sits beside the health score: a score without
+   coverage context can imply confidence the static analyzer has not earned. */
+.viz-coverage__heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.viz-coverage__heading .viz-panel__title {
+    margin-bottom: 8px;
+}
+
+.viz-coverage__badge {
+    padding: 3px 7px;
+    border-radius: 999px;
+    border: 1px solid rgba(74, 222, 128, 0.28);
+    color: var(--lb-success);
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.viz-coverage__badge--partial {
+    border-color: rgba(240, 180, 41, 0.35);
+    color: var(--lb-warning);
+}
+
+.viz-coverage__stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.viz-coverage__stats > div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+    padding: 7px 6px;
+    border-radius: var(--lb-radius-sm);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.viz-coverage__stats strong {
+    color: var(--lb-text);
+    font-size: 14px;
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+}
+
+.viz-coverage__stats span,
+.viz-coverage__issues span {
+    color: var(--lb-text-faint);
+    font-size: 10px;
+    line-height: 1.35;
+}
+
+.viz-coverage__issues {
+    margin-top: 8px;
+}
+
+.viz-coverage__issues p {
+    margin: 3px 0 0;
+    color: var(--lb-warning);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+}
+
+.viz-coverage__note {
+    margin: 8px 0 0;
+    color: var(--lb-text-faint);
+    font-size: 10px;
+    line-height: 1.45;
+}
+
+.viz-coverage__methodology {
+    margin-top: 8px;
+    color: var(--lb-text-faint);
+    font-size: 10px;
+    line-height: 1.45;
+}
+
+.viz-coverage__methodology summary {
+    cursor: pointer;
+    color: var(--lb-text-muted);
+}
+
+.viz-coverage__methodology ul {
+    margin: 6px 0;
+    padding-left: 16px;
+}
+
+.viz-coverage__methodology p {
+    margin: 6px 0;
+}
+
+
+.viz-coverage__issues ul {
+    margin: 5px 0 0;
+    padding-left: 16px;
+    color: var(--lb-text-muted);
+    font-size: 10px;
+    line-height: 1.5;
+}
+
+.viz-impact__file {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--lb-accent, var(--lb-text));
+    text-align: left;
+    overflow-wrap: anywhere;
+    font: inherit;
+    cursor: pointer;
+}
+
+.viz-impact__file:hover {
+    text-decoration: underline;
+}
+
+/* Preserve access to every sidebar section, even when viewport height is small. */
+.viz-explorer__body > .resizable-panel--left > .resizable-panel__content { overflow-y:auto; overflow-x:hidden; scrollbar-width:thin; }
+.viz-explorer__body > .resizable-panel--left .viz-panel--grow { flex:0 0 auto; min-height:270px; }
+.viz-explorer__body > .resizable-panel--right > .resizable-panel__content { overflow-y:auto; overflow-x:hidden; }
+.viz-graph-empty { display:grid; place-items:center; text-align:center; padding:30px; height:100%; color:var(--lb-text-faint); }
+.graph-toolbar__actions button:disabled { opacity:0.35; cursor:not-allowed; }
+
+/* Native, keyboard-accessible vertical accordions for non-navigation sidebar cards.
+   Existing Analysis Coverage/Change Impact accordions keep their own styles. */
+.viz-accordion { min-width: 0; }
+.viz-accordion > .viz-accordion__summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 6px;
+    padding: 4px 5px;
+    margin: -4px -5px;
+    min-height: 20px;
+}
+.viz-accordion > .viz-accordion__summary::-webkit-details-marker { display: none; }
+.viz-accordion > .viz-accordion__summary::marker { content: ''; }
+.viz-accordion > .viz-accordion__summary:hover { background: rgba(255, 255, 255, 0.04); }
+.viz-accordion > .viz-accordion__summary:focus-visible { outline: 2px solid var(--lb-accent); outline-offset: 2px; }
+.viz-accordion > .viz-accordion__summary .viz-panel__title { margin: 0; }
+.viz-accordion__actions { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.viz-accordion__value { font-size: 10px; font-weight: 600; color: var(--lb-text-muted); text-transform: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100px; }
+.viz-accordion__chevron { flex-shrink: 0; color: var(--lb-text-muted); transition: transform 180ms ease; }
+.viz-accordion[open] > .viz-accordion__summary .viz-accordion__chevron { transform: rotate(180deg); }
+.viz-accordion > .viz-accordion__body { padding-top: 14px; min-width: 0; }
+/* A native details box with display:flex may expose its content even while closed.
+   Keep details as block; only its expanded body uses flex for the folder tree. */
+.viz-explorer__body > .resizable-panel--left .viz-accordion--explorer { display: block; flex: 0 0 auto; min-height: 0; overflow: visible; }
+.viz-accordion--explorer[open] { min-height: 210px; }
+.viz-accordion--explorer > .viz-accordion__body--explorer { display: flex; flex-direction: column; min-height: 170px; max-height: min(52vh, 540px); overflow: hidden; }
+.viz-accordion--explorer .folder-tree { min-height: 0; flex: 1; overflow-y: auto; }
+.viz-accordion--folder-files > .viz-accordion__summary h4 { margin: 0; }
+.viz-accordion--folder-files > .viz-accordion__body { padding-top: 10px; }
+@media (prefers-reduced-motion: reduce) {
+    .viz-accordion__chevron { transition: none; }
+}

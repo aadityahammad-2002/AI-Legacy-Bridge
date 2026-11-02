@@ -4,6 +4,65 @@
  * (files, dependencies, connections, roles, layerViolations).
  */
 
+
+// ---------------------------------------------------------------------
+// Import-graph layer direction checks
+// ---------------------------------------------------------------------
+
+const DEPENDENCY_LAYER_ORDER = {
+    presentation: 0, controller: 0, controllers: 0, endpoint: 0, router: 0,
+    ui: 0, component: 0, components: 0, page: 0, view: 0, forms: 0,
+    feature: 1, service: 2, services: 2, api: 2, data: 3, model: 3,
+    repository: 3, repositories: 3, dao: 3, entity: 3, entities: 3,
+    util: 4, utils: 4, helper: 4, lib: 4, core: 4, config: 5,
+    test: 6, modules: 5, forms: 0, classes: 3,
+};
+
+/**
+ * Detects architecture layer direction directly from file/module imports.
+ * `source` is the importer and `target` is the imported module, unlike the
+ * legacy call graph where source is the function-defining file. Only resolved
+ * explicit imports are treated as stronger evidence; same-package/name-based
+ * edges are excluded to reduce heuristic false positives.
+ */
+export function computeDependencyLayerViolations(files = [], dependencies = []) {
+    const byPath = new Map(files.map((file) => [file.path, file]));
+    const importTypes = new Set(['import', 'from-import', 're-export', 'require', 'dynamic-import', 'wildcard-import']);
+    const violations = [];
+    const seen = new Set();
+
+    for (const edge of dependencies) {
+        if (!edge?.source || !edge?.target || !importTypes.has(edge.type)) continue;
+        if (edge.resolution !== 'resolved') continue;
+        const importer = byPath.get(edge.source);
+        const imported = byPath.get(edge.target);
+        if (!importer || !imported || importer.path === imported.path) continue;
+        const importerLayer = String(importer.layer || '').toLowerCase();
+        const importedLayer = String(imported.layer || '').toLowerCase();
+        if (/(?:^|\/)(?:tests?|__tests__)(?:\/|$)|\.(?:test|spec)\.[^.]+$/i.test(importer.path) || importerLayer === 'test') continue;
+        const importerLevel = DEPENDENCY_LAYER_ORDER[importerLayer];
+        const importedLevel = DEPENDENCY_LAYER_ORDER[importedLayer];
+        if (importerLevel === undefined || importedLevel === undefined || importerLevel <= importedLevel || importerLevel - importedLevel <= 1) continue;
+        const key = `${importer.path}|${imported.path}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        violations.push({
+            from: importer.path,
+            fromLayer: importer.layer || 'other',
+            to: imported.path,
+            toLayer: imported.layer || 'other',
+            relation: 'imports',
+            resolution: edge.resolution || 'resolved',
+            confidence: 'medium',
+            confidenceReason: 'The import edge is source-backed, but architectural layers are inferred from path/name conventions.',
+            line: Number.isInteger(edge.line) ? edge.line : null,
+            evidence: edge.evidence || null,
+            suggestion: `${importer.layer || 'Unknown'} should not import from ${imported.layer || 'Unknown'}. Consider inverting the dependency or introducing an abstraction.`,
+        });
+    }
+    return violations;
+}
+
 // ---------------------------------------------------------------------
 // Module boundary analysis
 // ---------------------------------------------------------------------
@@ -27,8 +86,11 @@ export function computeModuleBoundaries({ files, dependencies }) {
     const moduleOfFile = new Map(files.map((f) => [f.path, moduleOf(f.path)]));
     const edgeCounts = new Map(); // "modA->modB" -> count
     dependencies.forEach((d) => {
-        const from = moduleOfFile.get(d.target); // target depends on source (per convention used elsewhere)
-        const to = moduleOfFile.get(d.source);
+        if (d.resolution === 'ambiguous' || d.resolution === 'unresolved') return;
+        // Canonical dependency edge: source is the importer, target is the
+        // imported module. Keep the visual direction consistent with that model.
+        const from = moduleOfFile.get(d.source);
+        const to = moduleOfFile.get(d.target);
         if (!from || !to || from === to) return;
         const key = `${from}->${to}`;
         edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
@@ -128,8 +190,8 @@ export function computeArchitectureDrift({ layerViolations, connections }) {
 
     return {
         violationCount, totalConnections: connections.length, driftPct, level, worstOffenders,
-        confidence: 'FACT',
-        confidenceReason: 'Computed directly from layer violations already detected by parsing import/call direction against each file\'s detected layer.',
+        confidence: 'INFERENCE',
+        confidenceReason: 'Violation counts are deterministic, but expected architectural layers and some call relationships are inferred heuristically; review the configured layer conventions before relying on this percentage.',
     };
 }
 

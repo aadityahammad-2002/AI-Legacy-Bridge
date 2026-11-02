@@ -114,40 +114,52 @@ def _fetch_repo_data(repository_id: str):
 
 
 def index_repository(repository_id: str) -> int:
-    """Synchronous re-index of one repository: RAG chunks (Postgres/pgvector)
-    AND the graph mirror (Neo4j) — see graph_store.sync_repository. Returns
-    the number of chunks written."""
+    """Re-index one repository without exposing a partially-written vector index.
+
+    Chunk construction and embedding generation happen before the database
+    transaction. The old index is deleted and the new rows are inserted in a
+    single transaction, protected by a transaction-scoped advisory lock so two
+    concurrent index requests for the same repository do not interleave.
+    If embedding generation or any insert fails, the old index remains intact.
+    The graph mirror is synced only after the vector transaction commits.
+    """
     methods, classes, dependencies = _fetch_repo_data(repository_id)
-
-    with db.get_cursor(dict_rows=False) as cur:
-        cur.execute("DELETE FROM code_chunks WHERE repository_id = %s", (repository_id,))
-
     chunks = build_chunks(repository_id, methods, classes, dependencies)
-    if chunks:
-        contents = [c["content"] for c in chunks]
-        embeddings = embedding.embed_batch(contents)
+    contents = [chunk["content"] for chunk in chunks]
+    vectors = embedding.embed_batch(contents) if contents else []
 
-        with db.get_cursor(dict_rows=False) as cur:
-            for chunk, vec in zip(chunks, embeddings):
-                cur.execute(
-                    """
-                    INSERT INTO code_chunks
-                        (repository_id, file_path, class_name, function_name, content, embedding, metadata)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
-                    """,
-                    (
-                        chunk["repository_id"],
-                        chunk["file_path"],
-                        chunk["class_name"],
-                        chunk["function_name"],
-                        chunk["content"],
-                        vec,
-                        _to_json(chunk["metadata"]),
-                    ),
-                )
-        log.info("Indexed %d RAG chunks for repository %s", len(chunks), repository_id)
-    else:
-        log.info("No chunks produced for repository %s (no method bodies extracted)", repository_id)
+    if len(vectors) != len(chunks):
+        raise RuntimeError(
+            f"Embedding count mismatch for repository {repository_id}: "
+            f"expected {len(chunks)}, received {len(vectors)}"
+        )
+
+    # get_cursor commits on successful exit and rolls back on any exception.
+    # Keeping DELETE + INSERT in this one context makes replacement atomic.
+    with db.get_cursor(dict_rows=False) as cur:
+        # Serialize re-indexes of the same repository. A hash collision only
+        # causes unnecessary serialization; it does not mix repository data.
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (repository_id,))
+        cur.execute("DELETE FROM code_chunks WHERE repository_id = %s", (repository_id,))
+        for chunk, vector in zip(chunks, vectors):
+            cur.execute(
+                """
+                INSERT INTO code_chunks
+                    (repository_id, file_path, class_name, function_name, content, embedding, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                """,
+                (
+                    chunk["repository_id"],
+                    chunk["file_path"],
+                    chunk["class_name"],
+                    chunk["function_name"],
+                    chunk["content"],
+                    vector,
+                    _to_json(chunk["metadata"]),
+                ),
+            )
+
+    log.info("Indexed %d RAG chunks for repository %s", len(chunks), repository_id)
 
     if config.NEO4J_PASSWORD:
         try:

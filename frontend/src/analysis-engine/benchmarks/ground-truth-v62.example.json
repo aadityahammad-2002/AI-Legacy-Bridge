@@ -1,0 +1,18 @@
+{
+  "name": "toy-labelled-import-graph-not-real-world-accuracy",
+  "files": [
+    { "path": "src/app.ts", "content": "import { work } from './service';\nexport function start() { return work(); }" },
+    { "path": "src/service.ts", "content": "export function work() { return 42; }" },
+    { "path": "src/unrelated.ts", "content": "export function work() { return -1; }" }
+  ],
+  "expectedDependencies": [
+    { "source": "src/app.ts", "target": "src/service.ts", "present": true },
+    { "source": "src/app.ts", "target": "src/unrelated.ts", "present": false }
+  ],
+  "expectedFunctionCalls": [
+    { "callerFile": "src/app.ts", "callerName": "start", "calleeFile": "src/service.ts", "calleeName": "work", "present": true },
+    { "callerFile": "src/app.ts", "callerName": "start", "calleeFile": "src/unrelated.ts", "calleeName": "work", "present": false }
+  ],
+  "expectedFindings": [],
+  "evaluationOptions": { "excludeCategories": ["security"] }
+}

@@ -15,7 +15,7 @@ function useRepoStats(analysisResult) {
             circular: findCount('Circular Dependenc'),
             coupled: findCount('Highly Coupled'),
             large: findCount('Large Files'),
-            score: healthScore?.score ?? 0,
+            score: healthScore?.score ?? null,
             grade: healthScore?.grade || '—',
         };
     }, [analysisResult]);
@@ -34,7 +34,7 @@ function MiniHealthRing({ score, grade }) {
                     transform={`rotate(-90 ${center} ${center})`} />
             </svg>
             <div className="ai-explorer__mini-ring-label">
-                <strong>{score}</strong>
+                <strong>{score == null ? '—' : score}</strong>
                 <span>{grade}</span>
             </div>
         </div>
@@ -91,12 +91,11 @@ export function DetectiveSidePanels({ analysisResult, onAsk, onOpenFile }) {
                 <div className="ai-explorer__legend-row"><span className="ai-explorer__legend-dot ai-explorer__legend-dot--circular" />Circular dependency<em>{stats.circular}</em></div>
                 <div className="ai-explorer__legend-row"><span className="ai-explorer__legend-dot ai-explorer__legend-dot--unused" />Unused<em>{stats.unused}</em></div>
             </div>
-            <h4>Investigation Log</h4>
+            <h4>Analysis evidence</h4>
             <ul className="ai-explorer__log">
-                <li><CheckCircle2 size={12} strokeWidth={2} className="ai-explorer__log-done" /> Explore the case files</li>
-                <li><CheckCircle2 size={12} strokeWidth={2} className="ai-explorer__log-done" /> Analyze the connections</li>
-                <li><Circle size={12} strokeWidth={2} /> Connect the clues</li>
-                <li><Circle size={12} strokeWidth={2} /> Solve the case</li>
+                <li><CheckCircle2 size={12} className="ai-explorer__log-done" /> {stats.files} files in the current analysis</li>
+                <li><CheckCircle2 size={12} className="ai-explorer__log-done" /> {stats.links} discovered dependency records</li>
+                <li><Circle size={12} /> Further conclusions require source inspection</li>
             </ul>
         </div>
     );
@@ -121,12 +120,11 @@ export function MissionControlSidePanels({ analysisResult, onAsk, onOpenFile }) 
                     <div className="ai-explorer__metrics-alert"><strong>{stats.circular}</strong><span>Circular Dep</span></div>
                 </div>
             </div>
-            <h4>Mission Timeline</h4>
+            <h4>Current evidence</h4>
             <ul className="ai-explorer__log">
-                <li><CheckCircle2 size={12} strokeWidth={2} className="ai-explorer__log-done" /> Repository scanned</li>
-                <li><CheckCircle2 size={12} strokeWidth={2} className="ai-explorer__log-done" /> Graph built</li>
-                <li><CheckCircle2 size={12} strokeWidth={2} className="ai-explorer__log-done" /> Risk analysis complete</li>
-                <li><Circle size={12} strokeWidth={2} /> Awaiting your query</li>
+                <li><CheckCircle2 size={12} className="ai-explorer__log-done" /> {stats.files} analyzed files</li>
+                <li><CheckCircle2 size={12} className="ai-explorer__log-done" /> {stats.links} dependency records</li>
+                <li><Circle size={12} /> Ask the AI service to inspect a specific question</li>
             </ul>
         </div>
     );

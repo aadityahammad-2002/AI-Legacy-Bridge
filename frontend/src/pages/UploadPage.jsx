@@ -6,6 +6,7 @@ import * as Babel from '@babel/standalone';
 import { fetchGitHubRepository } from '../repo-sources/github.js';
 import { readZipRepository } from '../repo-sources/zip.js';
 import { readLocalFolderFromInput, pickAndReadLocalFolder, isFileSystemAccessSupported } from '../repo-sources/localFolder.js';
+import { analyzeRepositoryOffThread } from '../workers/analysisClient.js';
 import { configureAnalysisEngine, analyzeRepository } from '../analysis-engine/orchestrator.js';
 import { saveAnalysisSnapshot, setActiveSession, loadAnalysisSnapshot } from '../session/session.js';
 import { ingestAnalysis, listRepositories, getRepositoryDetail, deleteRepository } from '../api/backend.js';
@@ -69,6 +70,7 @@ export default function UploadPage({ onAnalysisComplete }) {
     const [status, setStatus] = useState('idle'); // idle | working | error
     const [progress, setProgress] = useState(null); // { phase, current, total }
     const [errorMessage, setErrorMessage] = useState('');
+    const [sourceWarnings, setSourceWarnings] = useState([]);
 
     const [recentRepos, setRecentRepos] = useState([]);
     const [recentReposError, setRecentReposError] = useState(null);
@@ -77,6 +79,8 @@ export default function UploadPage({ onAnalysisComplete }) {
     const [duplicateMatch, setDuplicateMatch] = useState(null); // RepositorySummaryDto | null
 
     const folderInputRef = useRef(null);
+    const analysisControllerRef = useRef(null);
+    useEffect(() => () => analysisControllerRef.current?.abort(), []);
 
     useEffect(() => {
         listRepositories()
@@ -182,12 +186,16 @@ export default function UploadPage({ onAnalysisComplete }) {
     }
 
     async function runAnalysis(overrideGithubUrl) {
+        analysisControllerRef.current?.abort();
+        const analysisController = new AbortController();
+        analysisControllerRef.current = analysisController;
         setDuplicateMatch(null);
         setStatus('working');
         setErrorMessage('');
+        setSourceWarnings([]);
         setProgress(null);
         try {
-            let repoMeta, files, truncated;
+            let repoMeta, files, truncated, sourceWarningsForRun = [];
 
             if (activeTab === 'github') {
                 ({ repoMeta, files, truncated } = await fetchGitHubRepository(
@@ -196,7 +204,8 @@ export default function UploadPage({ onAnalysisComplete }) {
                     handleProgress
                 ));
             } else if (activeTab === 'zip') {
-                ({ repoMeta, files } = await readZipRepository(zipFile, handleProgress));
+                ({ repoMeta, files, warnings: sourceWarningsForRun = [] } = await readZipRepository(zipFile, handleProgress));
+                setSourceWarnings(sourceWarningsForRun);
             } else {
                 if (localPreloaded) {
                     ({ repoMeta, files } = localPreloaded);
@@ -216,7 +225,13 @@ export default function UploadPage({ onAnalysisComplete }) {
                 console.warn('[UploadPage] GitHub tree response was truncated — very large repo, some files may be missing.');
             }
 
-            const analysisResult = await analyzeRepository(repoMeta, files, handleProgress);
+            // Run the unchanged engine in a module Worker; only unsupported browsers
+            // use the legacy main-thread route. A Worker failure is surfaced,
+            // not silently rerun or mistaken for successful analysis.
+            const analysisResult = typeof Worker === 'undefined'
+                ? await analyzeRepository(repoMeta, files, handleProgress)
+                : await analyzeRepositoryOffThread(repoMeta, files, handleProgress, { signal: analysisController.signal });
+            if (analysisController.signal.aborted) return;
 
             const repositoryId = crypto.randomUUID();
 
@@ -249,6 +264,7 @@ export default function UploadPage({ onAnalysisComplete }) {
 
             onAnalysisComplete?.({ repositoryId, repoMeta, analysisResult: localSnapshot, ingestError });
         } catch (err) {
+            if (analysisController.signal.aborted || err.name === 'AbortError') return;
             console.error('[UploadPage] analysis failed:', err);
             setStatus('error');
             setErrorMessage(err.message || 'Something went wrong while analyzing this repository.');
@@ -496,6 +512,7 @@ export default function UploadPage({ onAnalysisComplete }) {
                                 )}
 
                                 {status === 'error' && <div className="upload-error">{errorMessage}</div>}
+                                {sourceWarnings.length > 0 && <div className="upload-warning" role="status">{sourceWarnings.map((warning, index) => <div key={`${index}-${warning}`}>{warning}</div>)}</div>}
                             </div>
                         </div>
                     </div>

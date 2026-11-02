@@ -35,7 +35,7 @@ export default function CaseBoard({ analysisResult, onOpenFile, onAsk }) {
             {!hasAnyEvidence && (
                 <div className="case-board__note">
                     <div className="case-board__pin" />
-                    <p>No major red flags found — this codebase is looking clean. Ask a question below to dig deeper anyway.</p>
+                    <p>No findings from the four displayed issue categories. This does not establish that the repository is risk-free.</p>
                 </div>
             )}
 
@@ -46,7 +46,7 @@ export default function CaseBoard({ analysisResult, onOpenFile, onAsk }) {
                         <FileWarning size={14} strokeWidth={2} />
                         <span>{topLarge.file?.split('/').pop()}</span>
                     </div>
-                    <span className="case-board__badge case-board__badge--risk">High Risk</span>
+                    <span className="case-board__badge case-board__badge--risk">Large-file finding</span>
                     <p>{topLarge.desc || `Large file — ${largeFiles.items.length} file(s) flagged as oversized.`}</p>
                 </button>
             )}
@@ -93,12 +93,12 @@ export default function CaseBoard({ analysisResult, onOpenFile, onAsk }) {
                     <Pin size={12} strokeWidth={2} className="case-board__pin-icon" />
                     <div className="case-board__card-head">
                         <Ghost size={14} strokeWidth={2} />
-                        <span>Unused Files</span>
+                        <span>Potentially Unused</span>
                     </div>
                     <ul>
                         {unusedList.map((it) => <li key={it.file}>{it.file?.split('/').pop() || it.name}</li>)}
                     </ul>
-                    <span className="case-board__hint">Not referenced anywhere — probably safe to remove.</span>
+                    <span className="case-board__hint">Potentially unreferenced in the available static analysis. Verify before removal.</span>
                 </button>
             )}
         </div>

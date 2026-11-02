@@ -4,12 +4,7 @@ function findIssue(issues, match) {
     return (issues || []).find((i) => i.title?.includes(match));
 }
 
-const DIFFICULTY = {
-    circular: { label: 'HARD', className: 'mission-board__diff--hard' },
-    large: { label: 'HARD', className: 'mission-board__diff--hard' },
-    coupled: { label: 'MEDIUM', className: 'mission-board__diff--medium' },
-    unused: { label: 'EASY', className: 'mission-board__diff--easy' },
-};
+const ISSUE_MARKER = { label: 'ANALYSIS FINDING', className: '' };
 
 /**
  * Turns the same issues array Detective/Key Metrics use into a quest list —
@@ -27,32 +22,32 @@ export default function MissionBoard({ analysisResult, onAsk }) {
 
     const missions = [
         circular?.items?.length > 0 && {
-            id: 'circular', icon: AlertTriangle, difficulty: DIFFICULTY.circular,
+            id: 'circular', icon: AlertTriangle, difficulty: ISSUE_MARKER,
             title: 'Eliminate Circular Dependency',
             target: circular.items.slice(0, 2).map((it) => it.files?.map((f) => f.split('/').pop()).join(' ↔ ')).join(', '),
             count: circular.items.length,
             ask: `Help me eliminate the circular dependencies in this codebase. Where should I start?`,
         },
         large?.items?.length > 0 && {
-            id: 'large', icon: FileWarning, difficulty: DIFFICULTY.large,
+            id: 'large', icon: FileWarning, difficulty: ISSUE_MARKER,
             title: 'Refactor Oversized Files',
             target: large.items[0]?.file?.split('/').pop(),
             count: large.items.length,
             ask: `Which files are too large and should be refactored? Suggest how to split them.`,
         },
         coupled?.items?.length > 0 && {
-            id: 'coupled', icon: Link2, difficulty: DIFFICULTY.coupled,
+            id: 'coupled', icon: Link2, difficulty: ISSUE_MARKER,
             title: 'Reduce Coupling',
             target: coupled.items[0]?.file?.split('/').pop(),
             count: coupled.items.length,
             ask: `Which files are most highly coupled, and how can I reduce that coupling?`,
         },
         unused?.items?.length > 0 && {
-            id: 'unused', icon: Ghost, difficulty: DIFFICULTY.unused,
+            id: 'unused', icon: Ghost, difficulty: ISSUE_MARKER,
             title: 'Clean Up Unused Code',
             target: unused.items[0]?.file?.split('/').pop() || unused.items[0]?.name,
             count: unused.items.length,
-            ask: `List everything that's unused and safe to delete.`,
+            ask: `List unreferenced code candidates and the evidence needed before deciding whether to delete them.`,
         },
     ].filter(Boolean);
 
@@ -61,21 +56,21 @@ export default function MissionBoard({ analysisResult, onAsk }) {
             <div className="mission-board__hud">
                 <div className="mission-board__hud-item">
                     <span>CODEBASE LEVEL</span>
-                    <strong>{healthScore?.grade || '—'} · {healthScore?.score ?? 0}/100</strong>
+                    <strong>{healthScore?.grade || '—'} · {healthScore?.score ?? '—'}/100</strong>
                 </div>
                 <div className="mission-board__hud-item">
                     <span>ACTIVE MISSIONS</span>
                     <strong>{missions.length}</strong>
                 </div>
                 <div className="mission-board__hud-item mission-board__hud-item--status">
-                    <span className="mission-board__live-dot" /> STATUS: READY
+                    <span className="mission-board__live-dot" /> STATUS: STATIC ANALYSIS
                 </div>
             </div>
 
             {missions.length === 0 && (
                 <div className="mission-board__empty">
                     <Rocket size={20} strokeWidth={1.6} />
-                    <p>No active missions — this codebase is in good shape. Ask a question below to run a deeper scan.</p>
+                    <p>No suggestions in the currently displayed issue categories. This is not a clean-code guarantee.</p>
                 </div>
             )}
 

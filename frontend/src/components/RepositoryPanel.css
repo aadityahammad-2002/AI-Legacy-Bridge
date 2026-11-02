@@ -783,3 +783,47 @@
 .syn-type { color: #e5c07b; }
 .syn-tag { color: #e06c75; }
 .syn-attr { color: #d19a66; }
+
+/* File impact, individual recommendations and duplicate findings: retain their
+   existing data and actions while making long content expandable on demand. */
+.repo-panel__impact--collapsible > .repo-panel__impact-head,
+.repo-panel__action--collapsible > .repo-panel__action-head,
+.repo-panel__duplicates--collapsible > .repo-panel__duplicates-head {
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+}
+.repo-panel__impact--collapsible > summary::-webkit-details-marker,
+.repo-panel__action--collapsible > summary::-webkit-details-marker,
+.repo-panel__duplicates--collapsible > summary::-webkit-details-marker { display: none; }
+.repo-panel__impact--collapsible > summary::marker,
+.repo-panel__action--collapsible > summary::marker,
+.repo-panel__duplicates--collapsible > summary::marker { content: ''; }
+.repo-panel__impact--collapsible > summary:focus-visible,
+.repo-panel__action--collapsible > summary:focus-visible,
+.repo-panel__duplicates--collapsible > summary:focus-visible { outline: 2px solid var(--lb-accent); outline-offset: 2px; border-radius: 5px; }
+.repo-panel__impact-chevron,
+.repo-panel__action-chevron,
+.repo-panel__duplicates-chevron { margin-left: auto; flex-shrink: 0; color: var(--lb-text-muted); transition: transform 180ms ease; }
+.repo-panel__impact--collapsible[open] .repo-panel__impact-chevron,
+.repo-panel__action--collapsible[open] .repo-panel__action-chevron,
+.repo-panel__duplicates--collapsible[open] .repo-panel__duplicates-chevron { transform: rotate(180deg); }
+.repo-panel__impact-content { padding-top: 1px; }
+.repo-panel__action--collapsible > .repo-panel__action-head { display: flex; align-items: center; }
+.repo-panel__action--collapsible .repo-panel__action-title { min-width: 0; overflow-wrap: anywhere; }
+.repo-panel__action--collapsible > .repo-panel__action-content { padding-top: 6px; }
+.repo-panel__duplicates--collapsible { border: 1px solid var(--lb-border); border-radius: var(--lb-radius-md); margin-top: 12px; overflow: hidden; }
+.repo-panel__duplicates-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; background: var(--lb-surface); font-size: 12px; font-weight: 600; color: var(--lb-text); }
+.repo-panel__duplicates-body { padding: 8px 12px; }
+@media (prefers-reduced-motion: reduce) {
+    .repo-panel__impact-chevron, .repo-panel__action-chevron, .repo-panel__duplicates-chevron { transition: none; }
+}
+
+/* Interactive Impact Analysis overflow control. */
+button.repo-panel__more {
+    display: inline-block; padding: 3px 0; border: 0; background: transparent;
+    font: inherit; font-size: 11px; color: var(--lb-accent2); text-align: left;
+    cursor: pointer; touch-action: manipulation;
+}
+button.repo-panel__more:hover { text-decoration: underline; }
+button.repo-panel__more:focus-visible { outline: 2px solid var(--lb-accent2); outline-offset: 3px; border-radius: 2px; }

@@ -5,13 +5,9 @@
  * access, Connections). Follows the same localStorage convention as
  * session.js (`legacybridge:` key prefix).
  *
- * IMPORTANT: this is a frontend-only stopgap. There is no backend endpoint
- * yet for account/team/connection data, so everything here lives in the
- * browser's localStorage on this one machine — it is NOT shared across
- * devices or team members, and the LLM API key is stored in plaintext in
- * localStorage (not encrypted at rest). Once the backend adds real
- * auth + a secrets table, this module should be replaced with API calls
- * and the key should never round-trip back to the browser after save.
+ * IMPORTANT: profile and team entries are local browser notes, not
+ * authenticated accounts or permission settings. Service credentials
+ * must be configured server-side and are not collected on the UI.
  */
 
 const LS_KEYS = {

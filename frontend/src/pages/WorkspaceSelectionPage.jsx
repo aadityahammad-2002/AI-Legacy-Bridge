@@ -1,4 +1,7 @@
-import { Boxes, MessageSquareCode, LogOut, CheckCircle2, FileCode2 } from 'lucide-react';
+import ExportWorker from '../workers/export.worker.js?worker';
+import { toDownloadableAnalysisJson } from '../analysis-engine/reportFormats.js';
+import { runWorker } from '../workers/workerClient.js';
+import { Boxes, MessageSquareCode, LogOut, CheckCircle2, FileCode2, Download } from 'lucide-react';
 import './WorkspaceSelectionPage.css';
 
 const LANGUAGE_LABELS = {
@@ -29,6 +32,36 @@ export default function WorkspaceSelectionPage({ repoMeta, analysisResult, onEnt
     const classCount = analysisResult?.classes?.length ?? 0;
     const language = dominantLanguage(analysisResult?.files);
 
+    async function handleExportAnalysisJson() {
+        // The analysis payload is complete for review; raw repository file contents
+        // are intentionally excluded because they are source material, not analysis
+        // output, and can make the export enormous or expose secrets unnecessarily.
+        // Use the engine-owned export boundary. Do not serialize analysisResult
+        // directly: its in-memory files still contain raw source for analysis.
+        let exportJson;
+        try {
+            exportJson = typeof Worker !== 'undefined' && (analysisResult?.files?.length || 0) >= 75
+                ? await runWorker(ExportWorker,
+                    { analysisResult: analysisResult || {}, repoMeta })
+                : toDownloadableAnalysisJson(analysisResult || {}, repoMeta);
+        } catch (error) {
+            console.error('[WorkspaceSelectionPage] JSON export failed:', error);
+            window.alert(`Could not export repository analysis: ${error.message}`);
+            return;
+        }
+        const blob = new Blob([exportJson], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        const safeName = String(repoMeta?.name || analysisResult?.repository?.name || 'repository')
+            .replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'repository';
+        anchor.href = url;
+        anchor.download = `${safeName}-analysis.json`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
     return (
         <div className="workspace-select">
             <button className="workspace-select__exit" onClick={onExitRepository}>
@@ -55,6 +88,11 @@ export default function WorkspaceSelectionPage({ repoMeta, analysisResult, onEnt
                         {classCount > 0 && <> · {classCount} classes</>}
                     </p>
                 )}
+
+                <button className="workspace-select__export" onClick={handleExportAnalysisJson}>
+                    <Download size={15} strokeWidth={1.8} />
+                    Download Full Analysis JSON
+                </button>
 
                 <div className="workspace-select__cards">
                     <button

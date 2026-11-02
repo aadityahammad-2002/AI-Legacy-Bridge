@@ -1,0 +1,24 @@
+AI Legacy Bridge Analysis Engine v8.2.5 - targeted correctness fixes
+
+1) Java method span reconciliation
+   Legacy Java regex extraction sometimes produced a declaration-line-only span.
+   The later source-masked Java lexical extractor already computed the correct
+   bounded method body, but a name+line deduper threw it away. Parser.extract
+   now upgrades the identical symbol only if the lexical result is a strictly
+   longer, source-bounded span; AST results remain authoritative.
+   Reproduced on CultivationX AiService.java: chat at 117-153 and
+   callAiForText at 374-384.
+
+2) Complete downloadable JSON sanitation
+   reportFormats.toDownloadableAnalysisJson is now the tested, single export
+   boundary. The workspace download button calls this function. It removes
+   root fileContents and per-file content while preserving file metadata and
+   bounded function-level source evidence.
+
+INSTALLATION: The JSON download button is in
+ frontend/src/pages/WorkspaceSelectionPage.jsx, OUTSIDE analysis-engine.
+ Replacing only analysis-engine will NOT update a previously installed old
+ WorkspaceSelectionPage.jsx. Use the complete installation ZIP at project root,
+ and reload the frontend to pick up the new page code.
+
+Scope: No compiler, no runtime proof, no AI/RAG or storage changes.

@@ -1,0 +1,23 @@
+{
+  "name": "replace-with-a-reviewed-repository-name",
+  "files": [
+    {
+      "path": "src/example.js",
+      "content": "export function example() { return true; }"
+    }
+  ],
+  "expectedHealthScore": 75,
+  "expectedHealthGrade": "B",
+  "expectedFindings": [
+    {
+      "ruleId": "replace.with.exact.rule.id",
+      "path": "src/example.js",
+      "line": 1,
+      "title": "A manually verified expected finding"
+    }
+  ],
+  "evaluationOptions": {
+    "lineTolerance": 0,
+    "ignoreSuppressed": true
+  }
+}

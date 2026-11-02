@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, useMemo, forwardRef, useImperativeHandle, 
 import * as d3 from 'd3';
 
 import './GraphCanvas.css';
+import { selectVisibleGraphNodes } from './graphData.js';
+import { computeGraphPositions } from '../workers/graphClient.js';
 
 const DEFAULT_WIDTH = 900;  // only used as containerSize's initial value before the first real measurement
 const DEFAULT_HEIGHT = 640;
@@ -255,9 +257,12 @@ const layoutReady = layoutVersion > 0;    const [containerSize, setContainerSize
     const manualViewRef = useRef(false);
 
     const truncated = nodes.length > MAX_RENDERED_NODES;
+    // A selected file must never disappear simply because it falls beyond
+    // the performance cap. Show its direct neighbors first, then fill up
+    // from the repository graph. Every displayed edge is still a real edge.
     const renderedNodes = useMemo(
-        () => (truncated ? nodes.slice(0, MAX_RENDERED_NODES) : nodes),
-        [nodes, truncated]
+        () => selectVisibleGraphNodes(nodes, edges, selectedNodeId, MAX_RENDERED_NODES),
+        [nodes, edges, selectedNodeId]
     );
     const renderedNodeIds = useMemo(() => new Set(renderedNodes.map((n) => n.id)), [renderedNodes]);
     const renderedEdges = useMemo(
@@ -304,31 +309,46 @@ const layoutReady = layoutVersion > 0;    const [containerSize, setContainerSize
     //     `metroSnap`, applied last regardless of mode, rounds every position to the
     //     nearest grid cell for a blocky "metro map" look. ---
     useEffect(() => {
-    manualViewRef.current = false;
-    if (renderedNodes.length === 0) {
+        manualViewRef.current = false;
+        const controller = new AbortController();
+        let alive = true;
+        // Do not render new repository nodes using old layout coordinates.
         positionsRef.current = new Map();
-        setLayoutVersion((v) => v + 1);
-        return;
-    }
-
-    const { width, height } = containerSizeRef.current;
-
-    let positions;
-if (layoutMode === 'radial') {
-    positions = layoutRadial(renderedNodes, renderedEdges, width, height, spacingSpread);
-} else if (layoutMode === 'layers') {
-    positions = layoutLayers(renderedNodes, colorKeyFn, width, height, spacingSpread);
-} else if (layoutMode === 'grid') {
-    positions = layoutGrid(renderedNodes, width, height, spacingSpread);
-} else {
-    positions = layoutForce(renderedNodes, renderedEdges, width, height, spacingSpread, spacingLinks);
-}
-
-    if (metroSnap) positions = snapToGrid(positions);
-
-    positionsRef.current = positions;
-    setLayoutVersion((v) => v + 1);
-}, [renderedNodes, renderedEdges, layoutMode, metroSnap, colorKeyFn, spacingSpread, spacingLinks]);
+        setLayoutVersion(0);
+        if (renderedNodes.length === 0) {
+            positionsRef.current = new Map();
+            setLayoutVersion((v) => v + 1);
+            return () => controller.abort();
+        }
+        const { width, height } = containerSizeRef.current;
+        const apply = (positions) => {
+            if (!alive) return;
+            positionsRef.current = metroSnap ? snapToGrid(positions) : positions;
+            setLayoutVersion((v) => v + 1);
+        };
+        // Geometric layouts are inexpensive. The force simulation runs in a
+        // separate thread; changing layout terminates stale calculations.
+        if (layoutMode !== 'force' || typeof Worker === 'undefined') {
+            let positions;
+            if (layoutMode === 'radial') positions = layoutRadial(renderedNodes, renderedEdges, width, height, spacingSpread);
+            else if (layoutMode === 'layers') positions = layoutLayers(renderedNodes, colorKeyFn, width, height, spacingSpread);
+            else if (layoutMode === 'grid') positions = layoutGrid(renderedNodes, width, height, spacingSpread);
+            else positions = layoutForce(renderedNodes, renderedEdges, width, height, spacingSpread, spacingLinks);
+            apply(positions);
+        } else {
+            computeGraphPositions({ mode: 'force', nodes: renderedNodes, edges: renderedEdges,
+                width, height, spread: spacingSpread, linksParam: spacingLinks }, { signal: controller.signal })
+                .then((entries) => apply(new Map(entries)))
+                .catch((error) => {
+                    if (!alive || error.name === 'AbortError') return;
+                    // Failure must be visible; keep graph usable if bundling/worker
+                    // support is broken on a specific browser.
+                    console.error('[GraphCanvas] Worker layout failed:', error);
+                    apply(layoutForce(renderedNodes, renderedEdges, width, height, spacingSpread, spacingLinks));
+                });
+        }
+        return () => { alive = false; controller.abort(); };
+    }, [renderedNodes, renderedEdges, layoutMode, metroSnap, colorKeyFn, spacingSpread, spacingLinks]);
 
     /** Bounding box of current node positions, in screen-pixel space. */
     const computeBBox = useCallback(() => {
@@ -589,10 +609,12 @@ timeout = setTimeout(() => { if (!manualViewRef.current) fitView(false); }, 150)
         <div className="graph-canvas">
             {truncated && (
                 <div className="graph-canvas__truncation-notice">
-                    Showing {MAX_RENDERED_NODES} of {nodes.length} files — this repository is large enough
-                    that the full graph would be unreadable. Use the folder tree to reach files not shown here.
+                    Displaying {renderedNodes.length} of {nodes.length} actual graph nodes (performance limit).
+                    {selectedNodeId ? ' Selected node and available direct neighbors are prioritized.' : ' Select a file in Explorer to focus its neighborhood.'}
+                    {' '}Remaining nodes are still in the analysis, not removed.
                 </div>
             )}
+            <div className="graph-canvas__direction-note">Arrow: source → referenced target · {renderedEdges.length} visible dependencies{selectedNodeId ? ' · green outgoing / amber incoming' : ''}</div>
             <svg
                 ref={svgRef}
                 width={containerSize.width}
@@ -606,6 +628,15 @@ timeout = setTimeout(() => { if (!manualViewRef.current) fitView(false); }, 150)
                 
             >
                 <defs>
+                    <marker id="graph-canvas-arrow" markerWidth="7" markerHeight="7" refX="5.8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+                        <path d="M0,0 L7,3.5 L0,7 Z" className="graph-canvas__arrow" />
+                    </marker>
+                    <marker id="graph-canvas-arrow-outgoing" markerWidth="7" markerHeight="7" refX="5.8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+                        <path d="M0,0 L7,3.5 L0,7 Z" fill="#4ade80" />
+                    </marker>
+                    <marker id="graph-canvas-arrow-incoming" markerWidth="7" markerHeight="7" refX="5.8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+                        <path d="M0,0 L7,3.5 L0,7 Z" fill="#facc15" />
+                    </marker>
                     <pattern id="graph-canvas-grid" width="24" height="24" patternUnits="userSpaceOnUse">
                         <circle cx="1" cy="1" r="1" className="graph-canvas__grid-dot" />
                     </pattern>
@@ -664,6 +695,20 @@ timeout = setTimeout(() => { if (!manualViewRef.current) fitView(false); }, 150)
                             const touchesSelected = selectedNodeId && (e.source === selectedNodeId || e.target === selectedNodeId);
                             const touchesHovered = hoveredNodeId && (e.source === hoveredNodeId || e.target === hoveredNodeId);
                             const faded = hoveredNodeId && !touchesHovered;
+                            // Stop before the destination node so the arrow is visible.
+                            const deltaX = t.x - s.x, deltaY = t.y - s.y;
+                            const length = Math.hypot(deltaX, deltaY) || 1;
+                            const endX = t.x - (deltaX / length) * 10;
+                            const endY = t.y - (deltaY / length) * 10;
+                            const edgeClass = 'graph-canvas__edge' +
+                                (touchesSelected || touchesHovered ? ' graph-canvas__edge--active' : '') +
+                                (e.source === selectedNodeId ? ' graph-canvas__edge--outgoing' : '') +
+                                (e.target === selectedNodeId ? ' graph-canvas__edge--incoming' : '') +
+                                (faded ? ' graph-canvas__edge--faded' : '');
+                            const edgeTitle = `${e.source} → ${e.target}${e.type ? ` (${e.type})` : ''}${e.line ? ` · source line ${e.line}` : ''}`;
+                            const arrowId = e.source === selectedNodeId
+                                ? 'graph-canvas-arrow-outgoing' : e.target === selectedNodeId
+                                    ? 'graph-canvas-arrow-incoming' : 'graph-canvas-arrow';
                             if (curvedLinks) {
                                 // Quadratic curve through a midpoint offset perpendicular to the
                                 // s->t line — a fixed, deterministic bow (no randomness) so the
@@ -678,26 +723,18 @@ timeout = setTimeout(() => { if (!manualViewRef.current) fitView(false); }, 150)
                                 return (
                                     <path
                                         key={i}
-                                        d={`M ${s.x} ${s.y} Q ${cx} ${cy} ${t.x} ${t.y}`}
-                                        fill="none"
-                                        className={
-                                            'graph-canvas__edge' +
-                                            (touchesSelected || touchesHovered ? ' graph-canvas__edge--active' : '') +
-                                            (faded ? ' graph-canvas__edge--faded' : '')
-                                        }
-                                    />
+                                        d={`M ${s.x} ${s.y} Q ${cx} ${cy} ${endX} ${endY}`}
+                                        fill="none" markerEnd={`url(#${arrowId})`}
+                                        className={edgeClass}
+                                    ><title>{edgeTitle}</title></path>
                                 );
                             }
                             return (
                                 <line
                                     key={i}
-                                    x1={s.x} y1={s.y} x2={t.x} y2={t.y}
-                                    className={
-                                        'graph-canvas__edge' +
-                                        (touchesSelected || touchesHovered ? ' graph-canvas__edge--active' : '') +
-                                        (faded ? ' graph-canvas__edge--faded' : '')
-                                    }
-                                />
+                                    x1={s.x} y1={s.y} x2={endX} y2={endY}
+                                    markerEnd={`url(#${arrowId})`} className={edgeClass}
+                                ><title>{edgeTitle}</title></line>
                             );
                         })}
                     </g>
