@@ -1,0 +1,25 @@
+BharatCode Build League 2026 — Project Entry
+
+Project name: AI Legacy Bridge
+Category: Coding & Developer Tools
+Repository: https://github.com/aadityahammad-2002/AI-Legacy-Bridge
+
+Problem
+Developers frequently need to understand, debug, test, and modernize unfamiliar or undocumented codebases. Repository-wide dependencies, call relationships, and change risks are difficult to understand from individual files alone.
+
+Solution
+AI Legacy Bridge is an AI-powered repository intelligence platform. It combines source analysis and an interactive developer interface with repository-aware retrieval and specialized AI assistance.
+
+Implemented capabilities in the project
+- Source analysis and architecture/dependency visualization
+- Call-graph and code-structure exploration
+- Repository-aware retrieval with vector and graph context
+- AI-assisted debugging, explanations, risk analysis, test suggestions, and migration guidance
+- Configurable OpenAI-compatible LLM integration
+
+BharatCode API configuration for the hackathon
+Base URL: https://bharatcode.ai/api/model/v1
+Model ID: qwen-3.8-27b
+Set the AI service's LEGACYBRIDGE_LLM_BASE_URL, LEGACYBRIDGE_LLM_MODEL, and LEGACYBRIDGE_LLM_API_KEY as server-side environment variables. API keys must never be committed to the repository.
+
+The BharatCode-backed workflow should be tested end-to-end before this repository is submitted as a working BharatCode-powered entry. This file is project identification and configuration guidance, not a substitute for that test.
