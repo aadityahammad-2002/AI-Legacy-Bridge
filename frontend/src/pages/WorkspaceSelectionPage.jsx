@@ -1,5 +1,5 @@
 import ExportWorker from '../workers/export.worker.js?worker';
-import { toDownloadableAnalysisJson } from '../analysis-engine/reportFormats.js';
+import { toWorkspaceAnalysisSourceJson } from '../export/workspaceAnalysisSourceExport.js';
 import { runWorker } from '../workers/workerClient.js';
 import { Boxes, MessageSquareCode, LogOut, CheckCircle2, FileCode2, Download } from 'lucide-react';
 import './WorkspaceSelectionPage.css';
@@ -33,20 +33,17 @@ export default function WorkspaceSelectionPage({ repoMeta, analysisResult, onEnt
     const language = dominantLanguage(analysisResult?.files);
 
     async function handleExportAnalysisJson() {
-        // The analysis payload is complete for review; raw repository file contents
-        // are intentionally excluded because they are source material, not analysis
-        // output, and can make the export enormous or expose secrets unnecessarily.
-        // Use the engine-owned export boundary. Do not serialize analysisResult
-        // directly: its in-memory files still contain raw source for analysis.
+        // Export analysis + verbatim source from the locally retained repository
+        // snapshot. The frozen Analysis Engine's 82 sections are not modified.
+        // All sizes use the Worker to avoid blocking the browser UI.
         let exportJson;
         try {
-            exportJson = typeof Worker !== 'undefined' && (analysisResult?.files?.length || 0) >= 75
-                ? await runWorker(ExportWorker,
-                    { analysisResult: analysisResult || {}, repoMeta })
-                : toDownloadableAnalysisJson(analysisResult || {}, repoMeta);
+            exportJson = typeof Worker !== 'undefined'
+                ? await runWorker(ExportWorker, { analysisResult: analysisResult || {}, repoMeta })
+                : toWorkspaceAnalysisSourceJson(analysisResult || {}, repoMeta);
         } catch (error) {
             console.error('[WorkspaceSelectionPage] JSON export failed:', error);
-            window.alert(`Could not export repository analysis: ${error.message}`);
+            window.alert(`Could not export repository analysis + source: ${error.message}`);
             return;
         }
         const blob = new Blob([exportJson], { type: 'application/json;charset=utf-8' });
@@ -55,7 +52,7 @@ export default function WorkspaceSelectionPage({ repoMeta, analysisResult, onEnt
         const safeName = String(repoMeta?.name || analysisResult?.repository?.name || 'repository')
             .replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'repository';
         anchor.href = url;
-        anchor.download = `${safeName}-analysis.json`;
+        anchor.download = `${safeName}-analysis-with-source.json`;
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();
@@ -91,8 +88,11 @@ export default function WorkspaceSelectionPage({ repoMeta, analysisResult, onEnt
 
                 <button className="workspace-select__export" onClick={handleExportAnalysisJson}>
                     <Download size={15} strokeWidth={1.8} />
-                    Download Full Analysis JSON
+                    Download Analysis + Source JSON
                 </button>
+                <p className="workspace-select__meta" style={{ maxWidth: 560, textAlign: 'center' }}>
+                    Includes raw repository text files and may contain credentials or other sensitive code. Keep the downloaded JSON private.
+                </p>
 
                 <div className="workspace-select__cards">
                     <button

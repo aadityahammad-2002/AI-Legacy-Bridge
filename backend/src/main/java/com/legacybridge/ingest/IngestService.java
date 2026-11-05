@@ -4,9 +4,15 @@ import com.legacybridge.ingest.dto.*;
 import com.legacybridge.storage.entity.*;
 import com.legacybridge.storage.repository.*;
 import org.springframework.stereotype.Service;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.fasterxml.jackson.databind.JsonNode;
+import java.time.Instant;
+import java.util.HashSet;
+import java.util.Set;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.http.HttpStatus;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
+import com.legacybridge.sync.AiSyncJobRepository;
 
 /**
  * Stores an already-completed analysis result (produced by the browser's
@@ -30,7 +36,8 @@ public class IngestService {
     private final DependencyRepository dependencyRepository;
     private final GraphNodeRepository graphNodeRepository;
     private final GraphEdgeRepository graphEdgeRepository;
-    private final AiServiceClient aiServiceClient;
+    private final AiSyncJobRepository syncJobs;
+    private final JdbcTemplate jdbcTemplate;
 
     public IngestService(RepositoryEntityRepository repositoryRepository,
                           FileRepository fileRepository,
@@ -40,7 +47,8 @@ public class IngestService {
                           DependencyRepository dependencyRepository,
                           GraphNodeRepository graphNodeRepository,
                           GraphEdgeRepository graphEdgeRepository,
-                          AiServiceClient aiServiceClient) {
+                          AiSyncJobRepository syncJobs,
+                          JdbcTemplate jdbcTemplate) {
         this.repositoryRepository = repositoryRepository;
         this.fileRepository = fileRepository;
         this.classRepository = classRepository;
@@ -49,18 +57,38 @@ public class IngestService {
         this.dependencyRepository = dependencyRepository;
         this.graphNodeRepository = graphNodeRepository;
         this.graphEdgeRepository = graphEdgeRepository;
-        this.aiServiceClient = aiServiceClient;
+        this.syncJobs = syncJobs;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     @Transactional
-    public IngestResponse ingest(AnalysisIngestRequest request) {
+    public IngestResponse ingest(AnalysisIngestRequest request, JsonNode fullSnapshot) {
         var repositoryId = request.repositoryId();
 
-        // If this repositoryId was already ingested (e.g. a retried request),
-        // replace it cleanly rather than duplicating rows.
-        deleteExistingData(repositoryId);
+        // Reject ambiguous path identities before any data is modified.
+        // SQL UNIQUE(repository_id,path) would also reject them, but with a less
+        // usable error and only after the transaction has started writing.
+        Set<String> seenPaths = new HashSet<>();
+        for (var file : request.files()) {
+            if (!seenPaths.add(file.path())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Duplicate source path: " + file.path());
+            }
+        }
+        if (!Set.of("github", "zip", "local").contains(request.repository().source())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unsupported repository source");
+        }
 
-        var repoEntity = new RepositoryEntity();
+        // Lock existing parent record; only its children are replaced. Deleting
+        // the parent would also delete unrelated cascade rows and reset history.
+        var existing = repositoryRepository.findByIdForUpdate(repositoryId);
+        var repoEntity = existing.orElseGet(RepositoryEntity::new);
+        if (existing.isPresent()) {
+            deleteExistingData(repositoryId);
+        }
+        repoEntity.setRevision(repoEntity.getRevision() + 1);
+        repoEntity.setUpdatedAt(Instant.now());
+        repoEntity.setAnalysisSnapshot(fullSnapshot.deepCopy());
         repoEntity.setId(repositoryId);
         repoEntity.setName(request.repository().name());
         repoEntity.setSource(request.repository().source());
@@ -70,7 +98,9 @@ public class IngestService {
         repoEntity.setPatterns(request.patterns());
         repoEntity.setSecurityIssues(request.securityIssues());
         repoEntity.setDuplicates(request.duplicates());
-        repositoryRepository.save(repoEntity);
+        // Ensure the assigned-ID parent insert/update is flushed before
+        // child-table IDENTITY inserts require its foreign-key row.
+        repositoryRepository.saveAndFlush(repoEntity);
 
         var files = request.files().stream()
                 .map(f -> new FileEntity(repositoryId, f.path(), f.language(), f.loc(), f.content()))
@@ -134,17 +164,10 @@ public class IngestService {
             }
         }
 
-        // The AI service (Python — see ai-service/README.md) re-queries
-        // methods/classes/dependencies from Postgres itself, so it must not
-        // be triggered until this transaction has actually committed —
-        // otherwise its SELECT would run before these rows are visible.
-        // afterCommit (not a direct call here) guarantees that ordering.
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                aiServiceClient.triggerIndexAsync(repositoryId);
-            }
-        });
+        // Atomic outbox: the INDEX job exists iff this ingestion transaction commits.
+        // The scheduled worker retries later if Python is down. No afterCommit
+        // CompletableFuture and no lost indexing events on Java process crashes.
+        syncJobs.enqueueIndex(repositoryId, repoEntity.getRevision());
 
         return new IngestResponse(
                 repositoryId,
@@ -157,13 +180,17 @@ public class IngestService {
 
     /** Supports safe re-ingestion of the same repositoryId (e.g. client retry after a network error). */
     private void deleteExistingData(java.util.UUID repositoryId) {
-        graphEdgeRepository.deleteAll(graphEdgeRepository.findByRepositoryId(repositoryId));
-        graphNodeRepository.deleteAll(graphNodeRepository.findByRepositoryId(repositoryId));
-        dependencyRepository.deleteAll(dependencyRepository.findByRepositoryId(repositoryId));
-        importRepository.deleteAll(importRepository.findByRepositoryId(repositoryId));
-        methodRepository.deleteAll(methodRepository.findByRepositoryId(repositoryId));
-        classRepository.deleteAll(classRepository.findByRepositoryId(repositoryId));
-        fileRepository.deleteAll(fileRepository.findByRepositoryId(repositoryId));
-        repositoryRepository.findById(repositoryId).ifPresent(repositoryRepository::delete);
+        graphEdgeRepository.deleteByRepositoryIdInBulk(repositoryId);
+        graphNodeRepository.deleteByRepositoryIdInBulk(repositoryId);
+        dependencyRepository.deleteByRepositoryIdInBulk(repositoryId);
+        importRepository.deleteByRepositoryIdInBulk(repositoryId);
+        methodRepository.deleteByRepositoryIdInBulk(repositoryId);
+        classRepository.deleteByRepositoryIdInBulk(repositoryId);
+        fileRepository.deleteByRepositoryIdInBulk(repositoryId);
+        // The previous implementation deleted the parent and PostgreSQL
+        // cascaded into code_chunks. Preserve that behavior explicitly now
+        // that the parent is retained: stale RAG chunks must not survive
+        // a changed repository snapshot while Python reindexing is pending.
+        jdbcTemplate.update("DELETE FROM code_chunks WHERE repository_id = ?", repositoryId);
     }
 }

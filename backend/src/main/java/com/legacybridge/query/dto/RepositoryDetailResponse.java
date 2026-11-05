@@ -6,12 +6,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Reconstructs the same JSON shape orchestrator.js produces (see
- * AnalysisIngestRequest), so the frontend's Visualization Explorer can render
- * a reopened repository exactly like a freshly-analyzed one — with one
- * deliberate exception: there's no `fileContents`, since the backend never
- * stores whole-file source (see PROJECT_DOCUMENTATION.md section 8). The AI
- * Explorer's code editor already handles that being absent gracefully.
+ * Legacy reconstruction shape for repositories ingested before the complete
+ * JSON snapshot migration. New repositories return their exact stored JSON
+ * payload, including raw source content and all analysis sections.
  */
 public record RepositoryDetailResponse(
         RepositoryMetaDto repository,

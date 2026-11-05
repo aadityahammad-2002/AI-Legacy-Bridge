@@ -45,7 +45,7 @@ export function buildAnalysisCoverage({ files = [], fileStatuses = [], stageStat
     ).length;
     const failedStages = Object.values(stages).filter((stage) => stage.status === 'failed').length;
     const unsupportedStages = Object.values(stages).filter((stage) => stage.status === 'unsupported').length;
-    const unsupportedFiles = perFile.filter((file) => file.extraction.status === 'unsupported').length;
+    const unsupportedFiles = perFile.filter((file) => file.extraction.status === 'unsupported' || file.complexity.status === 'unsupported').length;
     const skippedStages = Object.values(stages).filter((stage) => stage.status === 'skipped').length;
     const partialStages = Object.values(stages).filter((stage) => stage.status === 'partial').length;
     const unknownStages = Object.values(stages).filter((stage) => stage.status === 'unknown').length;
@@ -54,6 +54,14 @@ export function buildAnalysisCoverage({ files = [], fileStatuses = [], stageStat
     const astPreferredFiles = codeFiles.filter((file) => ['ast', 'tree-sitter-ast'].includes(file.parserStrategy)).length;
     const unknownParserFiles = codeFiles.filter((file) => file.parserStrategy === 'unknown').length;
     const skippedNonCodeFiles = perFile.filter((file) => file.parserStrategy === 'not-code').length;
+    // Markup without executable script/handlers legitimately has no branch
+    // complexity. Do not describe that as a code-coverage failure. Preserve
+    // real extraction skips and skips in executable source files.
+    const skippedCodeFiles = codeFiles.filter((file) => file.extraction.status === 'skipped' ||
+        (file.complexity.status === 'skipped' && !(
+            /\.html?$/i.test(file.path) && file.extraction.status === 'complete' &&
+            file.complexity.reason === 'not applicable to this file'
+        ))).length;
     const parserStrategies = {};
     for (const file of codeFiles) parserStrategies[file.parserStrategy] = (parserStrategies[file.parserStrategy] || 0) + 1;
     const byLanguage = {};
@@ -86,13 +94,14 @@ export function buildAnalysisCoverage({ files = [], fileStatuses = [], stageStat
         item.astSharePct = item.codeFiles ? Math.round(item.astFiles / item.codeFiles * 1000) / 10 : null;
     });
     const incomplete = failedFiles > 0 || failedStages > 0 || unsupportedFiles > 0 || unsupportedStages > 0 || partialStages > 0 || skippedStages > 0 || unknownStages > 0 ||
-        heuristicParserFiles > 0 || unknownParserFiles > 0 ||
+        heuristicParserFiles > 0 || unknownParserFiles > 0 || skippedCodeFiles > 0 ||
         perFile.some((file) => file.extraction.status === 'unknown' || file.complexity.status === 'unknown');
     const statusReasons = [];
     if (failedFiles) statusReasons.push(`${failedFiles} file(s) failed extraction or complexity analysis.`);
     if (failedStages) statusReasons.push(`${failedStages} analysis stage(s) failed.`);
     if (heuristicParserFiles) statusReasons.push(`${heuristicParserFiles} code file(s) use heuristic/regex extraction rather than AST extraction.`);
     if (unknownParserFiles) statusReasons.push(`${unknownParserFiles} code file(s) have unknown parser strategy.`);
+    if (skippedCodeFiles) statusReasons.push(`${skippedCodeFiles} code file(s) had extraction or complexity skipped; treat output as incomplete.`);
     if (unsupportedFiles || unsupportedStages) statusReasons.push('Some files or stages are unsupported.');
     if (unknownStages) statusReasons.push(`${unknownStages} analysis stage(s) have unknown status.`);
     if (skippedStages) statusReasons.push(`${skippedStages} analysis stage(s) were skipped.`);
@@ -111,6 +120,7 @@ export function buildAnalysisCoverage({ files = [], fileStatuses = [], stageStat
             astPreferredFiles,
             unknownParserFiles,
             nonCodeFilesSkipped: skippedNonCodeFiles,
+            skippedCodeFiles,
         },
         files: {
             discovered: files.length,

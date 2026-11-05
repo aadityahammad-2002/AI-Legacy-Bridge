@@ -18,7 +18,7 @@ function baseDeclarations(file) {
         // C++ and C#: class Child : public Base, AnotherBase / class Child : Base
         /\b(?:class|struct|interface)\s+([A-Za-z_$][\w$]*)\s*:\s*(?:public\s+|private\s+|protected\s+)?([A-Za-z_$][\w:]*(?:\s*,\s*(?:(?:public|private|protected)\s+)?[A-Za-z_$][\w:]*)*)/g,
     ];
-    for (const expression of expressions) {
+    for (const expression of (lang === 'Python' ? [] : expressions)) {
         for (const match of sanitized.matchAll(expression)) {
             const bases = (match[2] || match[3] || '').split(',').map(s => s.trim().replace(/^(?:public|private|protected)\s+/, '').split(/[.<:]/).filter(Boolean).pop()).filter(Boolean);
             const line = sanitized.slice(0, match.index).split('\n').length;

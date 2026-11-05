@@ -28,6 +28,7 @@ function maskNonCode(content, language) {
     let quote = '';
     let triple = false;
     const templates = [];
+    let pythonFString = null;
     for (let i = 0; i < source.length;) {
         const c = source[i], next = source[i + 1], third = source[i + 2];
         if (state === 'line-comment') {
@@ -46,6 +47,18 @@ function maskNonCode(content, language) {
             if (c !== '\n' && c !== '\r') out[i] = ' ';
             i++; continue;
         }
+        if (state === 'python-fstring') {
+            if (c === '\\') { if (c !== '\n') out[i] = ' '; if (i + 1 < source.length && source[i + 1] !== '\n') out[i + 1] = ' '; i += 2; continue; }
+            if (c === '{' && next === '{' || c === '}' && next === '}') { out[i] = out[i + 1] = ' '; i += 2; continue; }
+            if (c === '{') { out[i] = ' '; pythonFString.depth = 1; state = 'code'; i++; continue; }
+            if (c === pythonFString.quote && (!pythonFString.triple || (next === c && third === c))) {
+                const span = pythonFString.triple ? 3 : 1;
+                for (let j = 0; j < span; j++) out[i + j] = ' ';
+                i += span; state = 'code'; pythonFString = null; continue;
+            }
+            if (c !== '\n' && c !== '\r') out[i] = ' ';
+            i++; continue;
+        }
         if (state === 'template') {
             if (c === '\\') { if (c !== '\n' && c !== '\r') out[i] = ' '; if (i + 1 < source.length && source[i + 1] !== '\n' && source[i + 1] !== '\r') out[i + 1] = ' '; i += 2; continue; }
             if (c === '`') { out[i] = ' '; i++; templates.pop(); state = 'code'; continue; }
@@ -54,12 +67,31 @@ function maskNonCode(content, language) {
             i++; continue;
         }
 
+        // The text of a Python f-string is data, while expressions in {...}
+        // are executable. Keep their exact source offsets for taint rules.
+        if (language === 'python' && pythonFString?.depth) {
+            if (c === '{') pythonFString.depth++;
+            else if (c === '}' && --pythonFString.depth === 0) {
+                out[i] = ' '; state = 'python-fstring'; i++; continue;
+            }
+        }
         const activeTemplateExpression = templates.length ? templates[templates.length - 1] : null;
         if (activeTemplateExpression?.inExpression) {
             if (c === '{') activeTemplateExpression.braceDepth += 1;
             else if (c === '}') {
                 activeTemplateExpression.braceDepth -= 1;
                 if (activeTemplateExpression.braceDepth === 0) { out[i] = ' '; activeTemplateExpression.inExpression = false; state = 'template'; i++; continue; }
+            }
+        }
+        if (language === 'python' && /[fF]/.test(c) && (i === 0 || !/[\w]/.test(source[i - 1]))) {
+            const prefix = source.slice(i).match(/^[fF](?:[rR])?(?=['"])/) || source.slice(i).match(/^[rR][fF](?=['"])/);
+            if (prefix) {
+                const at = i + prefix[0].length;
+                const q = source[at];
+                const tr = source[at + 1] === q && source[at + 2] === q;
+                for (let j = i; j < at + (tr ? 3 : 1); j++) out[j] = ' ';
+                pythonFString = { quote: q, triple: tr, depth: 0 };
+                state = 'python-fstring'; i = at + (tr ? 3 : 1); continue;
             }
         }
         if (language === 'python' && c === '#') { out[i] = ' '; state = 'line-comment'; i++; continue; }
@@ -103,36 +135,154 @@ function detectMitigationSignals(rhs, language) {
     return candidates.filter((pattern) => pattern.test(value)).map((pattern) => pattern.source.replace(/\\b|\\s\*\\\(/g, '').slice(0, 100));
 }
 
-function sourceKinds(language, line) {
-    const patterns = language === 'python' ? [
+// Maintain the existing source vocabulary in one table. Framework input
+// annotations are syntax hints, not evidence of a runtime exploit.
+const SOURCE_RULES = {
+    python: [
         { kind: 'request-input', re: /\brequest\s*\.\s*(?:args|form|json|values|data|files)\b|\binput\s*\(/ },
-    ] : language === 'java' ? [
+        { kind: 'request-input', re: /\b(?:request\s*\.\s*)?get_json\s*\(/ },
+        { kind: 'request-input', re: /\b(?:Query|Body)\s*\(/ },
+    ],
+    java: [
         { kind: 'request-input', re: /\b(?:request|httpRequest)\s*\.\s*get(?:Parameter|Header|QueryString)\s*\(/ },
-    ] : [
+        { kind: 'request-input', re: /@(?:RequestParam|PathVariable|RequestBody)\b/ },
+    ],
+    javascript: [
         { kind: 'request-input', re: /\b(?:req|request)\s*\.\s*(?:body|query|params|headers|cookies)\b/ },
         { kind: 'browser-input', re: /\b(?:location\s*\.\s*(?:search|hash)|new\s+URLSearchParams)\b/ },
-    ];
-    return patterns.filter((item) => item.re.test(line)).map((item) => item.kind);
+    ],
+};
+function sourceKinds(language, line) {
+    return [...new Set((SOURCE_RULES[language] || SOURCE_RULES.javascript)
+        .filter((item) => item.re.test(line)).map((item) => item.kind))];
+}
+
+// Join just the bounded expression that spans lines, never an entire function
+// body. Tracking bracket balance on masked code avoids counting brackets in
+// comments, strings and f-string literal text. The original line range remains.
+function logicalStatements(lines, language) {
+    const result = [];
+    for (let i = 0; i < lines.length;) {
+        const start = i, parts = [], opener = [];
+        let count = 0;
+        do {
+            const line = lines[i++] || '';
+            parts.push(line);
+            for (const c of line) {
+                if (c === '(' || c === '[') opener.push(c);
+                else if (c === ')' && opener.at(-1) === '(' || c === ']' && opener.at(-1) === '[') opener.pop();
+            }
+            // A multiline object/array destructure may open with 'const {'.
+            if (parts.length === 1 && /^\s*(?:const|let|var)\s*\{/.test(line)) {
+                opener.push(...(Array.from(line).filter(c => c === '{')));
+                for (const c of line) if (c === '}' && opener.at(-1) === '{') opener.pop();
+            } else if (opener.includes('{')) {
+                for (const c of line) if (c === '}' && opener.at(-1) === '{') opener.pop();
+            }
+            count += line.length;
+        } while (opener.length && i < lines.length && i - start < 24 && count < 12000);
+        result.push({ text: parts.join('\n'), startLine: start + 1, endLine: i });
+    }
+    return result;
+}
+
+function annotatedParameterSources(statement, language) {
+    const matches = [];
+    const text = String(statement || '');
+    if (language === 'java') {
+        for (const hit of text.matchAll(/@(?:RequestParam|PathVariable|RequestBody)(?:\s*\([^)]*\))?\s+(?:(?:final|@\w+|[\w.<>?\[\],]+)\s+)*([A-Za-z_$][\w$]*)\s*(?=[,)])/g)) {
+            matches.push(hit[1]);
+        }
+    } else if (language === 'python') {
+        for (const hit of text.matchAll(/\b([A-Za-z_]\w*)\s*:\s*[^,=\n]+?=\s*(?:Query|Body)\s*\(/g)) matches.push(hit[1]);
+    }
+    return [...new Set(matches)];
 }
 
 const SINKS = [
     { kind: 'sql-query', re: /(?:\.\s*(?:query|execute|raw)\s*\(|\b(?:executeQuery|executeUpdate|prepareStatement|createQuery)\s*\()/i },
-    { kind: 'command-execution', re: /\b(?:exec|execSync|spawn|system|popen)\s*\(/i },
+    // A RegExp.exec() or cursor.exec() call is not a command-execution sink.
+    // Keep unqualified exec and named process/OS APIs, including Java Runtime.exec.
+    { kind: 'command-execution', re: /\b(?:execSync|spawnSync|spawn|system|popen)\s*\(|(?<![\w$.])exec\s*\(|\b(?:child_process|subprocess|cp|Runtime\.getRuntime\(\))\s*\.\s*exec\s*\(/i },
     { kind: 'dynamic-evaluation', re: /\beval\s*\(|\bnew\s+Function\s*\(/i },
     { kind: 'html-injection', re: /\binnerHTML\s*=|\bdangerouslySetInnerHTML\b/i },
 ];
 
+/** Extract only the expression actually passed to a source-to-sink operation.
+ * A source used elsewhere on a compound line must not taint an unrelated sink.
+ * Null means that lexical extraction was inconclusive; never invent a flow. */
+function sinkOperands(line, kind) {
+    const operation = kind === 'sql-query'
+        ? /(?:\.\s*(?:query|execute|raw)\s*\(|\b(?:executeQuery|executeUpdate|prepareStatement|createQuery)\s*\()/ig
+        : kind === 'command-execution'
+            ? /\b(?:execSync|spawnSync|spawn|system|popen)\s*\(|(?<![\w$.])exec\s*\(|\b(?:child_process|subprocess|cp|Runtime\.getRuntime\(\))\s*\.\s*exec\s*\(/ig
+            : kind === 'dynamic-evaluation'
+                ? /\beval\s*\(|\bnew\s+Function\s*\(/ig
+                : null;
+    if (kind === 'html-injection') {
+        const expressions = [];
+        const assignments = /\binnerHTML\s*=(?!=)\s*([^;]+)/ig;
+        for (const match of line.matchAll(assignments)) expressions.push(match[1]);
+        // React's property receives an object expression; the entire following
+        // expression is a conservative syntactic bound, not a safety verdict.
+        const htmlProps = /\bdangerouslySetInnerHTML\s*(?:=|:)\s*([^;]+)/ig;
+        for (const match of line.matchAll(htmlProps)) expressions.push(match[1]);
+        return expressions;
+    }
+    if (!operation) return [];
+    const results = [];
+    for (const match of line.matchAll(operation)) {
+        const open = match.index + match[0].lastIndexOf('(');
+        let depth = 0;
+        let close = -1;
+        for (let i = open; i < line.length; i++) {
+            if (line[i] === '(') depth++;
+            else if (line[i] === ')') {
+                if (--depth === 0) { close = i; break; }
+            }
+        }
+        // Incomplete multiline expression is not interpreted as confirmed
+        // operand evidence by this deliberately line-bounded scanner.
+        if (close >= 0) results.push(line.slice(open + 1, close));
+    }
+    return results;
+}
+
+function originsAtSink(kind, line, active, language, lineNumber, sourceFactory) {
+    const expressions = sinkOperands(line, kind);
+    const origins = [];
+    for (const expression of expressions) {
+        for (const [name, values] of active.entries()) {
+            if (identifierUsed(expression, name)) origins.push(...values);
+        }
+        for (const sourceKind of sourceKinds(language, expression)) origins.push(sourceFactory(sourceKind));
+    }
+    return dedupeOrigins(origins);
+}
+
 function assignmentOnLine(line, language) {
     if (/^\s*(?:function\b|async\s+function\b|class\b|def\b|return\b|throw\b|if\b|while\b|for\b|switch\b|case\b|import\b|from\b|export\s+(?:import|\{)|\/\/|\/\*|\*)/.test(line)) return null;
     const patterns = language === 'java' ? [
-        /^\s*(?:(?:final\s+)?(?:byte|short|int|long|float|double|boolean|char|String|Object|var|[A-Z][\w.$<>?,\[\]]*)\s+)([A-Za-z_$][\w$]*)\s*=(?!=|>)([\s\S]*?)\s*;?\s*$/,
-        /^\s*([A-Za-z_$][\w$]*)\s*=(?!=|>)([\s\S]*?)\s*;?\s*$/,
+        /^\s*(?:(?:final\s+)?(?:byte|short|int|long|float|double|boolean|char|String|Object|var|[A-Z][\w.$<>?,\[\]]*)\s+)([A-Za-z_$][\w$]*)\s*=(?!=|>)([\s\S]*)$/,
+        /^\s*([A-Za-z_$][\w$]*)\s*=(?!=|>)([\s\S]*)$/,
     ] : [
-        /^\s*(?:(?:const|let|var|final)\s+)?([A-Za-z_$][\w$]*)\s*=(?!=|>)([\s\S]*?)\s*;?\s*$/,
+        /^\s*(?:(?:const|let|var|final)\s+)?([A-Za-z_$][\w$]*)\s*=(?!=|>)([\s\S]*)$/,
     ];
+    if (language === 'javascript') {
+        // Object rest, property renaming and array destructuring are all
+        // assignments to identifiers, not to their property/key names.
+        const m = line.match(/^\s*(?:const|let|var)\s*([\[{])([\s\S]*?)([\]}])\s*=(?!=|>)([\s\S]*)$/);
+        if (m && (m[1] === '{' && m[3] === '}' || m[1] === '[' && m[3] === ']')) {
+            const vars = m[2].split(',').map(part => {
+                const value = part.trim().replace(/^\.\.\./, '');
+                return (m[1] === '{' ? value.split(':').at(-1) : value).split('=')[0].trim();
+            }).filter(name => /^[A-Za-z_$][\w$]*$/.test(name));
+            return vars.length ? { variable: vars[0], variables: [...new Set(vars)], rhs: (m[4] || '').trim().replace(/;\s*$/, '') } : null;
+        }
+    }
     for (const pattern of patterns) {
         const match = line.match(pattern);
-        if (match) return { variable: match[1], rhs: match[2] || '' };
+        if (match) return { variable: match[1], variables: [match[1]], rhs: (match[2] || '').trim().replace(/;\s*$/, '') };
     }
     return null;
 }
@@ -143,7 +293,7 @@ function identifierUsed(line, name) {
 
 function dedupeOrigins(origins) {
     const byKey = new Map();
-    for (const origin of origins) byKey.set(`${origin.sourceLine}|${origin.sourceKind}|${origin.variable}`, origin);
+    for (const origin of origins) byKey.set(`${origin.sourcePath || ''}|${origin.sourceLine}|${origin.sourceKind}|${origin.sourceVariable || origin.variable}`, origin);
     return [...byKey.values()].slice(0, 10);
 }
 
@@ -168,9 +318,9 @@ export function analyzeHeuristicDataFlows(files = [], options = {}) {
         let sawSourceOrSink = false;
         const seenFlows = new Set();
 
-        for (let index = 0; index < lines.length; index++) {
-            const lineNumber = index + 1;
-            const line = lines[index];
+        for (const statement of logicalStatements(lines, language)) {
+            const lineNumber = statement.startLine;
+            const line = statement.text;
             // Do not leak a local variable's taint into an unrelated later
             // function. Closures/interprocedural flows are intentionally not
             // traced by this bounded heuristic scanner.
@@ -181,12 +331,17 @@ export function analyzeHeuristicDataFlows(files = [], options = {}) {
                 else active.delete(name);
             }
 
-            const sources = sourceKinds(language, line);
+            const assignment = assignmentOnLine(line, language);
+            const sources = sourceKinds(language, assignment ? assignment.rhs : line);
             const sinkKinds = SINKS.filter((sink) => sink.re.test(line)).map((sink) => sink.kind);
             if (sources.length || sinkKinds.length) sawSourceOrSink = true;
             sourceEventCount += sources.length;
             sinkEventCount += sinkKinds.length;
-            const assignment = assignmentOnLine(line, language);
+            // Request-annotated arguments are tainted at function entry, even
+            // when the annotation spans several lines.
+            for (const name of annotatedParameterSources(line, language)) {
+                active.set(name, [{ sourceLine: lineNumber, sourceKind: 'request-input', variable: name, lastTaintedLine: lineNumber }]);
+            }
             const originsInExpression = [];
             if (assignment) {
                 for (const [name, origins] of active.entries()) {
@@ -211,20 +366,25 @@ export function analyzeHeuristicDataFlows(files = [], options = {}) {
             }));
             const propagated = dedupeOrigins([...propagatedFromExpression, ...newOrigins]);
             if (assignment) {
-                if (propagated.length) active.set(assignment.variable, propagated);
-                else active.delete(assignment.variable); // A later untainted assignment kills this variable's prior heuristic taint.
+                for (const name of assignment.variables) {
+                    if (propagated.length) active.set(name, propagated.map(origin => ({ ...origin, variable: origin.sourceLine === lineNumber ? name : origin.variable })));
+                    else active.delete(name); // Un-tainted reassignments kill earlier local taint.
+                }
                 // Keep the local taint environment bounded on generated/very large files.
                 while (active.size > MAX_ACTIVE_VARIABLES) active.delete(active.keys().next().value);
             }
 
-            if (!sinkKinds.length || !propagated.length) continue;
-            for (const origin of propagated) {
-                if (origin.sourceLine > lineNumber) continue;
-                for (const sinkKind of sinkKinds) {
+            if (!sinkKinds.length) continue;
+            for (const sinkKind of sinkKinds) {
+                const sinkOrigins = originsAtSink(sinkKind, line, active, language, lineNumber, (sourceKind) => ({
+                    sourceLine: lineNumber, sourceKind, variable: '<inline-source>', lastTaintedLine: lineNumber,
+                }));
+                for (const origin of sinkOrigins) {
+                    if (origin.sourceLine > lineNumber) continue;
                     const key = `${origin.sourceLine}|${lineNumber}|${origin.sourceKind}|${sinkKind}`;
                     if (seenFlows.has(key)) continue;
-                    seenFlows.add(key);
                     if (localFlows >= MAX_FLOWS_PER_FILE || flows.length >= maxTotalFlows) break;
+                    seenFlows.add(key);
                     flows.push({
                         id: `data-flow:${file.path}:${origin.sourceLine}:${lineNumber}:${origin.sourceKind}:${sinkKind}`,
                         source: { path: file.path, line: origin.sourceLine, kind: origin.sourceKind, variable: origin.variable },
@@ -238,7 +398,7 @@ export function analyzeHeuristicDataFlows(files = [], options = {}) {
                         ],
                         limitations: ['Single-file heuristic only', 'Approximate function-boundary detection; nested scopes/control flow are not modeled.', 'Sanitizer-like calls are recorded as signals, not verified; no interprocedural data flow.'],
                     });
-                    localFlows += 1;
+                    localFlows++;
                 }
                 if (localFlows >= MAX_FLOWS_PER_FILE || flows.length >= maxTotalFlows) break;
             }
@@ -293,6 +453,7 @@ export function analyzeInterproceduralDataFlows(files = [], functions = [], func
     const maxStates = Math.max(50, Math.min(5000, Number(options.maxStates) || 1500));
     const filesByPath = new Map(files.map((file) => [file.path, file]));
     const sourceMasks = new Map();
+    const sourceViews = new Map();
     const funcs = new Map();
     const paramsByFunction = new Map();
     const outgoing = new Map();
@@ -303,10 +464,20 @@ export function analyzeInterproceduralDataFlows(files = [], functions = [], func
         if (!sourceMasks.has(file.path)) sourceMasks.set(file.path, maskNonCode(file.content || '', languageFor(file.path)));
         return sourceMasks.get(file.path);
     };
+    const getView = (file) => {
+        if (!sourceViews.has(file.path)) {
+            const masked = getMasked(file);
+            const maskedLines = masked.split('\n');
+            const lineOffsets = [];
+            let offset = 0;
+            for (const line of maskedLines) { lineOffsets.push(offset); offset += line.length + 1; }
+            sourceViews.set(file.path, { masked, maskedLines, lineOffsets, originalLines: file.content.split('\n') });
+        }
+        return sourceViews.get(file.path);
+    };
     const languageParams = (fn, file) => {
         const language = languageFor(file.path);
-        const source = getMasked(file);
-        const lines = source.split('\n');
+        const { maskedLines: lines } = getView(file);
         const start = Math.max(0, Number(fn.line || 1) - 1);
         const end = Math.min(lines.length, Number(fn.endLine || fn.line || 1), start + 80);
         const excerpt = lines.slice(start, end).join('\n');
@@ -357,9 +528,9 @@ export function analyzeInterproceduralDataFlows(files = [], functions = [], func
     const argsAtCall = (edge) => {
         const file = filesByPath.get(edge.callerFile);
         if (!file) return [];
-        const masked = getMasked(file), original = file.content;
-        const lines = masked.split('\n');
-        const lineStart = lines.slice(0, Math.max(0, (edge.callSiteLine || 1) - 1)).reduce((sum, line) => sum + line.length + 1, 0);
+        const { masked, lineOffsets } = getView(file), original = file.content;
+        const lineStart = lineOffsets[Math.max(0, (edge.callSiteLine || 1) - 1)];
+        if (lineStart === undefined) return [];
         const lineEnd = masked.indexOf('\n', lineStart);
         const rawLine = masked.slice(lineStart, lineEnd < 0 ? masked.length : lineEnd);
         const callName = String(edge.callName || edge.calleeFunctionName || '').split('.').pop();
@@ -396,6 +567,49 @@ export function analyzeInterproceduralDataFlows(files = [], functions = [], func
         outgoing.get(edge.callerFunctionKey).push({ ...edge, args: argsAtCall(edge) });
     }
 
+    // Python permits nested endpoint functions (for example, FastAPI routes
+    // defined inside create_app()). A parent function's recorded endLine can
+    // cover ALL of those child definitions. Processing the child bodies again
+    // under the parent's taint environment mixes independent endpoint inputs:
+    // /exceptions.limit -> /overview.db.execute is one such false positive.
+    // Keep line numbers intact and process each child via its own function key.
+    // Only exclude proven lexical children (strictly deeper indentation);
+    // sibling functions or ambiguous spans must never be hidden.
+    const pythonFunctionsByFile = new Map();
+    for (const fn of funcs.values()) {
+        if (languageFor(fn.file) !== 'python') continue;
+        if (!pythonFunctionsByFile.has(fn.file)) pythonFunctionsByFile.set(fn.file, []);
+        pythonFunctionsByFile.get(fn.file).push(fn);
+    }
+    const ownedLinesCache = new Map();
+    const ownFunctionLines = (fn, file) => {
+        const { maskedLines } = getView(file);
+        const start = Math.max(1, Number(fn.line) || 1);
+        const end = Math.min(maskedLines.length, Math.max(start, Number(fn.endLine) || start));
+        if (languageFor(file.path) !== 'python') return maskedLines.slice(start - 1, end);
+        if (ownedLinesCache.has(fn.key)) return ownedLinesCache.get(fn.key);
+        const owned = maskedLines.slice(start - 1, end);
+        const declaration = maskedLines[start - 1] || '';
+        if (!/^\s*(?:async\s+)?(?:def|class)\s+\w+/.test(declaration)) {
+            ownedLinesCache.set(fn.key, owned);
+            return owned;
+        }
+        const parentIndent = (declaration.match(/^\s*/) || [''])[0].length;
+        for (const child of pythonFunctionsByFile.get(file.path) || []) {
+            const childStart = Number(child.line);
+            const childEnd = Number(child.endLine);
+            if (child.key === fn.key || !Number.isInteger(childStart) || !Number.isInteger(childEnd)
+                || childStart <= start || childStart > end || childEnd > end || childEnd < childStart) continue;
+            const childDeclaration = maskedLines[childStart - 1] || '';
+            if (!/^\s*(?:async\s+)?(?:def|class)\s+\w+/.test(childDeclaration)) continue;
+            const childIndent = (childDeclaration.match(/^\s*/) || [''])[0].length;
+            if (childIndent <= parentIndent) continue;
+            for (let line = childStart; line <= childEnd; line++) owned[line - start] = '';
+        }
+        ownedLinesCache.set(fn.key, owned);
+        return owned;
+    };
+
     const sourceOrigin = (file, line, kind, variable) => ({ sourcePath: file.path, sourceLine: line, sourceKind: kind, sourceVariable: variable || '<inline-source>' });
     const seenFlows = new Set();
     const outputFlows = [];
@@ -411,16 +625,17 @@ export function analyzeInterproceduralDataFlows(files = [], functions = [], func
     for (const fn of funcs.values()) {
         const file = filesByPath.get(fn.file);
         if (!file) continue;
-        const maskedLines = getMasked(file).split('\n');
-        const start = Math.max(1, Number(fn.line) || 1);
-        const end = Math.min(maskedLines.length, Math.max(start, Number(fn.endLine) || start));
+        const owned = ownFunctionLines(fn, file);
         let hasSource = false;
-        for (let line = start; line <= end && !hasSource; line++) hasSource = sourceKinds(languageFor(file.path), maskedLines[line - 1] || '').length > 0;
+        for (const line of owned) {
+            if (sourceKinds(languageFor(file.path), line).length) { hasSource = true; break; }
+        }
         if (hasSource) queue.push({ functionKey: fn.key, taintedParams: {}, origins: {}, trace: [], depth: 0 });
     }
 
-    while (queue.length && statesProcessed < maxStates && outputFlows.length < maxFlows) {
-        const state = queue.shift();
+    let queueCursor = 0;
+    while (queueCursor < queue.length && statesProcessed < maxStates && outputFlows.length < maxFlows) {
+        const state = queue[queueCursor++];
         const fn = funcs.get(state.functionKey);
         const file = fn && filesByPath.get(fn.file);
         if (!fn || !file) continue;
@@ -429,9 +644,7 @@ export function analyzeInterproceduralDataFlows(files = [], functions = [], func
         if (stateSeen.has(stateKey)) continue;
         stateSeen.add(stateKey); statesProcessed++;
         const language = languageFor(file.path);
-        const masked = getMasked(file);
-        const lines = masked.split('\n');
-        const originalLines = file.content.split('\n');
+        const { maskedLines: lines, originalLines } = getView(file);
         const startLine = Math.max(1, Number(fn.line) || 1);
         const endLine = Math.min(lines.length, Math.max(startLine, Number(fn.endLine) || startLine));
         const params = paramsByFunction.get(fn.key) || [];
@@ -440,33 +653,42 @@ export function analyzeInterproceduralDataFlows(files = [], functions = [], func
             const name = params[Number(index)];
             if (name && Array.isArray(origins) && origins.length) active.set(name, origins);
         }
-        const outgoingEdges = (outgoing.get(fn.key) || []).filter((edge) => edge.callSiteLine >= startLine && edge.callSiteLine <= endLine);
+        const callsByLine = new Map();
+        for (const edge of outgoing.get(fn.key) || []) {
+            if (edge.callSiteLine < startLine || edge.callSiteLine > endLine) continue;
+            if (!callsByLine.has(edge.callSiteLine)) callsByLine.set(edge.callSiteLine, []);
+            callsByLine.get(edge.callSiteLine).push(edge);
+        }
 
-        for (let lineNumber = startLine; lineNumber <= endLine; lineNumber++) {
-            const line = lines[lineNumber - 1] || '';
-            const sources = sourceKinds(language, line);
-            const sinkKinds = SINKS.filter((sink) => sink.re.test(line)).map((sink) => sink.kind);
+        for (const statement of logicalStatements(ownFunctionLines(fn, file), language)) {
+            const lineNumber = startLine + statement.startLine - 1;
+            const lastLine = startLine + statement.endLine - 1;
+            const line = statement.text;
             const assignment = assignmentOnLine(line, language);
+            const sources = sourceKinds(language, assignment ? assignment.rhs : line);
+            const sinkKinds = SINKS.filter((sink) => sink.re.test(line)).map((sink) => sink.kind);
+            for (const name of annotatedParameterSources(line, language)) {
+                active.set(name, [sourceOrigin(file, lineNumber, 'request-input', name)]);
+            }
             const usedOrigins = [];
             const expression = assignment ? assignment.rhs : line;
             for (const [name, origins] of active.entries()) if (identifierUsed(expression, name)) usedOrigins.push(...origins);
             const inlineOrigins = sources.map((kind) => sourceOrigin(file, lineNumber, kind, assignment?.variable || '<inline-source>'));
             const propagated = dedupeOrigins([...usedOrigins, ...inlineOrigins]);
             if (assignment) {
-                if (propagated.length) active.set(assignment.variable, propagated);
-                else active.delete(assignment.variable);
+                for (const name of assignment.variables) {
+                    if (propagated.length) active.set(name, propagated);
+                    else active.delete(name);
+                }
                 while (active.size > MAX_ACTIVE_VARIABLES) active.delete(active.keys().next().value);
             }
 
             if (sinkKinds.length) {
                 sinkChecks += 1;
-                for (const origin of propagated) {
-                    const crossFunction = origin.sourcePath !== file.path || state.trace.length > 0;
-                    if (!crossFunction && origin.sourceLine === lineNumber && !identifierUsed(line, origin.sourceVariable)) {
-                        // Inline expression sources are still worth considering for same-line sinks.
-                        if (origin.sourceVariable !== '<inline-source>') continue;
-                    }
-                    for (const sinkKind of sinkKinds) {
+                for (const sinkKind of sinkKinds) {
+                    const sinkOrigins = originsAtSink(sinkKind, line, active, language, lineNumber,
+                        (kind) => sourceOrigin(file, lineNumber, kind, '<inline-source>'));
+                    for (const origin of sinkOrigins) {
                         const id = `${origin.sourcePath}:${origin.sourceLine}|${file.path}:${lineNumber}|${sinkKind}|${state.trace.length}`;
                         if (seenFlows.has(id)) continue;
                         seenFlows.add(id);
@@ -490,7 +712,7 @@ export function analyzeInterproceduralDataFlows(files = [], functions = [], func
             }
             if (outputFlows.length >= maxFlows || state.depth >= maxDepth) continue;
 
-            for (const edge of outgoingEdges.filter((candidate) => candidate.callSiteLine === lineNumber)) {
+            for (const edge of [...Array(lastLine - lineNumber + 1).keys()].flatMap(offset => callsByLine.get(lineNumber + offset) || [])) {
                 if (!edge.args?.length) continue;
                 const calleeParams = paramsByFunction.get(edge.calleeFunctionKey) || [];
                 const taintedParams = {};
@@ -516,7 +738,7 @@ export function analyzeInterproceduralDataFlows(files = [], functions = [], func
                     trace: [...state.trace, edge].slice(-maxDepth),
                     depth: state.depth + 1,
                 });
-                if (queue.length > maxStates) break;
+                if (queue.length - queueCursor > maxStates) break;
             }
         }
         if (outputFlows.length >= maxFlows) break;
@@ -524,10 +746,10 @@ export function analyzeInterproceduralDataFlows(files = [], functions = [], func
 
     return {
         schemaVersion: 1,
-        status: statesProcessed >= maxStates || outputFlows.length >= maxFlows ? 'partial' : 'heuristic-limited',
+        status: (statesProcessed >= maxStates && queueCursor < queue.length) || outputFlows.length >= maxFlows ? 'partial' : 'heuristic-limited',
         semantics: 'Bounded interprocedural source-to-sink leads using resolved call edges and heuristic argument-to-parameter mapping. Results are low-confidence and do not model complete control flow, types, aliasing, dynamic dispatch, or sanitizer semantics.',
         limits: { maxDepth, maxFlows, maxStates },
-        summary: { functionsIndexed: funcs.size, resolvedCallEdgesUsed: [...outgoing.values()].reduce((sum, edges) => sum + edges.length, 0), statesProcessed, callsWithTaintedArguments, sinkChecks, potentialFlows: outputFlows.length, resultLimitReached: outputFlows.length >= maxFlows, stateLimitReached: statesProcessed >= maxStates },
+        summary: { functionsIndexed: funcs.size, resolvedCallEdgesUsed: [...outgoing.values()].reduce((sum, edges) => sum + edges.length, 0), statesProcessed, callsWithTaintedArguments, sinkChecks, potentialFlows: outputFlows.length, resultLimitReached: outputFlows.length >= maxFlows, stateLimitReached: statesProcessed >= maxStates && queueCursor < queue.length },
         flows: outputFlows,
     };
 }

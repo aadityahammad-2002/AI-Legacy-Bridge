@@ -34,3 +34,4 @@ dist/
 .DS_Store
 # Python virtual environment
 .venv/
+/backend/config/local-db.properties

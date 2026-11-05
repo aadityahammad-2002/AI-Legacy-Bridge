@@ -7,8 +7,15 @@ import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 import java.util.UUID;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface DependencyRepository extends JpaRepository<DependencyEntity, Long> {
+    @Modifying
+    @Query("delete from DependencyEntity e where e.repositoryId = :repositoryId")
+    int deleteByRepositoryIdInBulk(@Param("repositoryId") UUID repositoryId);
+
     List<DependencyEntity> findByRepositoryId(UUID repositoryId);
 
     List<DependencyEntity> findByRepositoryIdAndSource(UUID repositoryId, String source);

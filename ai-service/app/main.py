@@ -29,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from uuid import UUID
 
-from . import config, db, embedding, context_retrieval, agent_graph, rag, llm_client, evaluation, code_assist
+from . import config, db, embedding, context_retrieval, agent_graph, rag, llm_client, evaluation, code_assist, graph_store
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("legacybridge.ai-service")
@@ -136,6 +136,23 @@ def index_repository(repository_id: UUID):
         raise HTTPException(status_code=500, detail=f"Indexing failed: {e}")
 
     return IndexResponse(repositoryId=repository_id, chunksIndexed=count)
+
+
+@app.delete("/index/{repository_id}", status_code=204)
+def delete_repository_index(repository_id: UUID):
+    """Idempotent removal of the Neo4j mirror after Java's DB cascade delete.
+
+    Vector chunks belong to PostgreSQL and are deleted by the Java transaction.
+    Do not delete PostgreSQL rows here, as repository IDs may be re-created.
+    """
+    if not config.NEO4J_PASSWORD:
+        return None  # vector-only deployments have no external graph mirror
+    try:
+        graph_store.delete_repository(str(repository_id))
+    except Exception:
+        log.exception("graph cleanup failed for repository %s", repository_id)
+        raise HTTPException(status_code=503, detail="Graph cleanup temporarily unavailable")
+    return None
 
 
 # --- /evaluate -----------------------------------------------------------

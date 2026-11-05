@@ -1,5 +1,6 @@
 package com.legacybridge.ingest.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.NotBlank;
 
@@ -10,6 +11,7 @@ import java.util.List;
  * "package" (extractClasses()'s output) — that's a reserved word in Java, so
  * it's mapped here to `packageName` via @JsonProperty.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record ClassDto(
         @NotBlank String name,
         @NotBlank String file,

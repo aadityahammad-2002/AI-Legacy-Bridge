@@ -50,6 +50,8 @@ export function computeChangeImpact(changedPath, dependencies = [], diagnostics 
         });
     }
 
+    for (const candidates of reverse.values()) candidates.sort((a, b) => a.path.localeCompare(b.path) || b.resolution.localeCompare(a.resolution));
+
     // Breadth-first traversal finds the shortest dependency path. If two paths
     // reach a file at the same depth, retain the one backed by stronger edges.
     const bestByPath = new Map();
@@ -160,6 +162,7 @@ export function computeFunctionImpact(changedFunctionKey, functionConnections = 
         });
     }
 
+    for (const callers of reverse.values()) callers.sort((a, b) => a.callerFunctionKey.localeCompare(b.callerFunctionKey) || b.confidence.localeCompare(a.confidence));
     const confidenceRank = (value) => value === 'high' ? 3 : value === 'medium' ? 2 : 1;
     const bestByKey = new Map();
     const queue = [{ key: target, depth: 0, confidenceRank: 3, via: [] }];

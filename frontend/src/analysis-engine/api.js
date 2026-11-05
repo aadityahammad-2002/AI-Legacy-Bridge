@@ -27,11 +27,11 @@ const ROUTE_PATTERNS = [
     { framework: 'Spring', re: /@RequestMapping\s*\(\s*method\s*=\s*RequestMethod\.(GET|POST|PUT|DELETE|PATCH)\s*\)/g,
       method: (m) => m[1].toUpperCase(), path: () => '' },
     // Flask: @app.route('/path', methods=['GET','POST'])
-    { framework: 'Flask', re: /@(?:app|blueprint|bp)\.route\s*\(\s*["']([^"']*)["'](?:[^)]*methods\s*=\s*\[([^\]]*)\])?/g,
-      method: (m) => (m[2] ? m[2].replace(/['"]/g, '').split(',')[0].trim().toUpperCase() : 'GET'), path: (m) => m[1] },
-    // FastAPI: @app.get("/path"), @router.post("/path")
-    { framework: 'FastAPI', re: /@(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*["']([^"']*)["']/g,
-      method: (m) => m[1].toUpperCase(), path: (m) => m[2] },
+    { framework: 'Flask', re: /@([A-Za-z_]\w*)\.route\s*\(\s*["']([^"']*)["'](?:[^)]*methods\s*=\s*\[([^\]]*)\])?/g,
+      method: (m) => (m[3] ? m[3].replace(/['"]/g, '').split(',')[0].trim().toUpperCase() : 'GET'), path: (m) => m[2], owner: (m) => m[1] },
+    // FastAPI: @app.get("/path"), @router.post("/path"), @users_router.get(...)
+    { framework: 'FastAPI', re: /@([A-Za-z_]\w*)\.(get|post|put|delete|patch)\s*\(\s*["']([^"']*)["']/g,
+      method: (m) => m[2].toUpperCase(), path: (m) => m[3], owner: (m) => m[1] },
     // Express: router.get('/path', ...), app.post('/path', ...)
     { framework: 'Express', re: /(?:router|app)\.(get|post|put|delete|patch)\s*\(\s*["']([^"']*)["']/g,
       method: (m) => m[1].toUpperCase(), path: (m) => m[2] },
@@ -100,7 +100,7 @@ function joinPath(base, path) {
  * `@GetMapping("/{id}")` on the method resolves to `/api/assets/{id}`
  * instead of just `/{id}`.
  */
-function getBasePath(content, framework, routeOffset = 0) {
+function getBasePath(content, framework, routeOffset = 0, owner = '') {
     if (framework === 'Spring') {
         // Associate the route with the nearest enclosing class, rather than
         // applying the first class's prefix to every controller in a file.
@@ -118,13 +118,37 @@ function getBasePath(content, framework, routeOffset = 0) {
         if (/\b(?:class|interface|record|public\s+\w+\s*\()/.test(tail)) return '';
         return last[1];
     }
-    if (framework === 'FastAPI') {
-        const m = content.match(/APIRouter\s*\([^)]*prefix\s*=\s*["']([^"']*)["']/);
-        return m ? m[1] : '';
-    }
-    if (framework === 'Flask') {
-        const m = content.match(/Blueprint\s*\([^)]*url_prefix\s*=\s*["']([^"']*)["']/);
-        return m ? m[1] : '';
+    if (framework === 'FastAPI' || framework === 'Flask') {
+        if (!owner) return '';
+        // Inspect only the binding for this decorator's receiver. A file can
+        // define multiple routers with different prefixes; first-match was wrong.
+        const constructorName = framework === 'FastAPI' ? 'APIRouter' : 'Blueprint';
+        const prefixName = framework === 'FastAPI' ? 'prefix' : 'url_prefix';
+        const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const declare = new RegExp('\\b'+escape(owner)+'\\s*=\\s*'+constructorName+'\\s*\\(', 'g');
+        let binding, latest = null;
+        while ((binding = declare.exec(content)) !== null && binding.index < routeOffset) latest = binding;
+        if (!latest) return '';
+        // Only balanced constructor arguments belong to this owner. In
+        // particular an unprefixed APIRouter() must not borrow the prefix from
+        // a second router declaration that appears later in the same file.
+        const start = latest.index + latest[0].length;
+        let depth=1, quote='', escaped=false, end=start;
+        for (; end < Math.min(routeOffset, start+2500); end++) {
+            const c=content[end];
+            if (quote) {
+                if (escaped) escaped=false;
+                else if (c==='\\') escaped=true;
+                else if (c===quote) quote='';
+            } else if (c==='"'||c==="'") quote=c;
+            else if (c==='(') depth++;
+            else if (c===')' && --depth===0) break;
+        }
+        if (depth!==0) return '';
+        const args=content.slice(start,end);
+        const re = new RegExp('\\b'+prefixName+'\\s*=\\s*["\']([^"\']*)["\']');
+        const match = args.match(re);
+        return match ? match[1] : '';
     }
     // Express: routers are typically mounted in a separate file (app.use('/api/x', router)),
     // not visible from the router file itself — not resolved here, see README note.
@@ -145,7 +169,7 @@ export function discoverEndpoints(files) {
         const scanContent = maskCommentsPreservingPositions(content, file.path);
         const executable = maskLanguageNonCode(content, identifyCodeLanguage(file.path));
         const extension = String(file.path || '').toLowerCase();
-        ROUTE_PATTERNS.forEach(({ framework, re, method, path }) => {
+        ROUTE_PATTERNS.forEach(({ framework, re, method, path, owner }) => {
             if (framework === 'Spring' && !/\.(?:java|kt|kts|groovy)$/i.test(extension)) return;
             if ((framework === 'FastAPI' || framework === 'Flask') && !/\.(?:py|pyw|pyi)$/i.test(extension)) return;
             if (framework === 'Express' && !/\.(?:js|jsx|mjs|cjs|ts|tsx|mts|cts)$/i.test(extension)) return;
@@ -156,7 +180,7 @@ export function discoverEndpoints(files) {
                 // template/string literal with illustrative code examples.
                 if (executable.slice(m.index, m.index + (framework === 'Spring' || framework === 'FastAPI' || framework === 'Flask' ? 1 : 3)).trim() === '') continue;
                 const line = lineOf(scanContent, m.index);
-                const basePath = getBasePath(scanContent, framework, m.index);
+                const basePath = getBasePath(scanContent, framework, m.index, owner?.(m));
                 const windowStart = Math.max(0, m.index - 300);
                 const windowEnd = Math.min(content.length, m.index + 300);
                 const nearby = scanContent.slice(windowStart, windowEnd);
@@ -197,6 +221,13 @@ function normalizeContractPath(value) {
         try { path = new URL(path).pathname; } catch { return null; }
     }
     path = path.split(/[?#]/, 1)[0];
+    // A browser client commonly uses `${API_BASE}/api/resource` rather
+    // than a root-relative URL. Strip ONLY an initial base expression when
+    // a static API path follows it; keep dynamic path segments as :param.
+    const baseExpression = path.match(/^\$\{([A-Za-z_$][\w$.]*)\}(?=\/)/);
+    if (baseExpression && /(?:base|url|host|origin|endpoint|service|api)/i.test(baseExpression[1])) {
+        path = path.slice(baseExpression[0].length);
+    }
     path = path.replace(/\$\{[^}]+\}/g, ':param').replace(/\{[^}]+\}/g, ':param');
     path = path.replace(/:[A-Za-z_$][\w$]*/g, ':param').replace(/\/+/g, '/');
     if (!path.startsWith('/')) return null;
@@ -204,33 +235,182 @@ function normalizeContractPath(value) {
     return path || '/';
 }
 
-export function extractClientApiCalls(files = []) {
+/** Resolve only statically visible, exported HTTP wrappers. A function merely
+ * named `api` is not assumed to perform network requests. The importing file
+ * must bind the wrapper from its actual source module. */
+function exportedHttpWrappers(files) {
+    const definitions = [];
+    const ext = /\.(?:js|jsx|mjs|cjs|ts|tsx)$/i;
+    for (const file of files) {
+        const path = String(file.path || '').replace(/\\/g, '/');
+        if (!ext.test(path) || isTestOrFixturePath(path)) continue;
+        const text = maskCommentsPreservingPositions(file.content || '', path);
+        const decl = /\bexport\s+(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*(?:<[^\n;]{0,180}>)?\s*\(\s*([A-Za-z_$][\w$]*)\s*(?::[^,)=\n]+)?(?:,|\))/g;
+        for (const match of text.matchAll(decl)) {
+            // A bounded source slice is intentionally conservative. Do not infer
+            // wrapper behavior from an unrelated function far away in the file.
+            const fnSource = text.slice(match.index, match.index + 3500);
+            const fetchMatch = fnSource.match(/\bfetch\s*\(\s*([A-Za-z_$][\w$]*)\s*\+\s*([A-Za-z_$][\w$]*)/);
+            if (!fetchMatch || fetchMatch[2] !== match[2]) continue;
+            const subsequentFunction = /\b(?:export\s+)?(?:async\s+)?function\s+[A-Za-z_$][\w$]*\s*(?:<|\()/g;
+            const intervening = subsequentFunction.exec(fnSource.slice(match[0].length, fetchMatch.index));
+            if (intervening) continue; // do not borrow a later function's fetch call
+            // The base must resolve to a static URL/path fallback, not an
+            // arbitrary runtime variable or an invented conventional prefix.
+            const baseName = fetchMatch[1];
+            const escapedBase = baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const baseAssign = new RegExp('\\b(?:const|let|var)\\s+' + escapedBase + '\\s*=([^;\\n]{0,350})');
+            const assignment = text.match(baseAssign);
+            if (!assignment) continue;
+            const staticBases = [...assignment[1].matchAll(/['"](https?:\/\/[^'"\s]+|\/[^'"\s]+)['"]/g)];
+            if (staticBases.length !== 1) continue;
+            const base = normalizeContractPath(staticBases[0][1]);
+            if (!base) continue;
+            definitions.push({ file: path, exportedName: match[1], base, defaultMethod: /\b(?:method|httpMethod)\s*=\s*['"]GET['"]/.test(fnSource.slice(0, 250)) ? 'GET' : null });
+        }
+    }
+    return definitions;
+}
+
+function resolveHttpWrapperImports(file, definitions) {
+    const path = String(file.path || '').replace(/\\/g, '/');
+    const imports = [];
+    const text = maskCommentsPreservingPositions(file.content || '', path);
+    const pattern = /\bimport\s*\{([^}]{1,500})\}\s*from\s*['"]([^'"]+)['"]/g;
+    for (const match of text.matchAll(pattern)) {
+        const specifier = match[2];
+        if (!(specifier.startsWith('.') || specifier.startsWith('@/'))) continue;
+        const roots = path.split('/');
+        let target;
+        if (specifier.startsWith('@/')) {
+            const srcIndex = roots.lastIndexOf('src');
+            if (srcIndex < 0) continue;
+            target = [...roots.slice(0, srcIndex + 1), ...specifier.slice(2).split('/')].join('/');
+        } else {
+            const parts = roots.slice(0, -1);
+            for (const part of specifier.split('/')) {
+                if (part === '..') parts.pop();
+                else if (part !== '.') parts.push(part);
+            }
+            target = parts.join('/');
+        }
+        const candidates = definitions.filter(d => d.file === target || d.file.replace(/\.(?:ts|tsx|js|jsx|mjs|cjs)$/i, '') === target || d.file.replace(/\/index\.(?:ts|tsx|js|jsx|mjs|cjs)$/i, '') === target);
+        if (candidates.length !== 1) continue;
+        for (const part of match[1].split(',')) {
+            const binding = part.trim().match(/^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/);
+            if (!binding || binding[1] !== candidates[0].exportedName) continue;
+            imports.push({ ...candidates[0], localName: binding[2] || binding[1] });
+        }
+    }
+    return imports;
+}
+
+export function extractClientApiCalls(files = [], backendEndpoints = null) {
     const calls = [];
+    const wrappers = exportedHttpWrappers(files || []);
+    // When server routes are available, use discovered evidence rather than
+    // guessing API namespaces from /api, /v1, etc. Retain strong mismatch
+    // candidates so the existing API-contract warning feature still works.
+    const knownRoutes = Array.isArray(backendEndpoints) ? backendEndpoints.map(route => ({
+        path: normalizeContractPath(route.path), method: String(route.method || 'GET').toUpperCase(),
+    })).filter(route => route.path) : null;
+    const routeMatches = (left, right) => {
+        const a = left.split('/').filter(Boolean), b = right.split('/').filter(Boolean);
+        return a.length === b.length && a.every((part,i) => part === b[i] || part === ':param' || b[i] === ':param');
+    };
+    const supportedByRoutes = (path, method) => {
+        if (!knownRoutes?.length) return false;
+        if (knownRoutes.some(route => routeMatches(path, route.path))) return true; // method mismatch is possible
+        // Only a uniquely strong suffix candidate may be retained as a
+        // potential route mismatch, not an arbitrary navigation URL.
+        const firstSegment = path.split('/').filter(Boolean)[0];
+        const candidates = knownRoutes.filter(route => route.method === method && route.path.split('/').filter(Boolean)[0] === firstSegment)
+            .map(route => commonSuffixSegments(path, route.path)).filter(score => score >= 2)
+            .sort((a,b) => b - a);
+        return candidates.length > 0 && (candidates.length === 1 || candidates[0] > candidates[1]);
+    };
     const clientExt = /\.(?:js|jsx|mjs|cjs|ts|tsx|vue|svelte)$/i;
     for (const file of files || []) {
         if (!clientExt.test(String(file.path || '')) || !String(file.content || '') || isTestOrFixturePath(file.path)) continue;
         const source = maskCommentsPreservingPositions(String(file.content), file.path);
         const executable = maskLanguageNonCode(String(file.content), identifyCodeLanguage(file.path));
-        const add = (method, rawPath, index, kind) => {
+        const add = (method, rawPath, index, kind, allowWrappedPath = false) => {
             if (!executable.slice(index, index + 3).trim()) return;
             const path = normalizeContractPath(rawPath);
             if (!path || path === '/' || path.startsWith('/static/')) return;
-            // Contract matching is intentionally limited to API-shaped paths. This
-            // avoids treating frontend navigation links as HTTP endpoint calls.
-            if (!/^\/(?:api|v\d+|graphql|rpc)(?:\/|$)/i.test(path)) return;
+            if (knownRoutes?.length) {
+                if (!supportedByRoutes(path, String(method || 'GET').toUpperCase())) return;
+            } else if (knownRoutes) {
+                // Server list supplied but empty: there is no evidence that
+                // a client navigation path targets a discovered API route.
+                return;
+            } else if (!allowWrappedPath && !/^\/(?:api|v\d+|graphql|rpc)(?:\/|$)/i.test(path)) {
+                // Compatibility for standalone callers without route context.
+                return;
+            }
             calls.push({ method: String(method || 'GET').toUpperCase(), path, rawPath, file: file.path, line: lineOf(source, index), kind });
         };
 
+        // Read one fetch expression at a time so subsequent requests do not
+        // donate their method option to earlier requests. When `method` is
+        // dynamic, do not silently claim it is GET.
+        const inferredFetchMethod = (at) => {
+            const start = source.indexOf('(', at);
+            if (start < 0) return 'GET';
+            let depth = 0, close = Math.min(source.length, start + 4000);
+            for (let pos = start; pos < close; pos++) {
+                if (executable[pos] === '(') depth++;
+                if (executable[pos] === ')' && --depth === 0) { close = pos + 1; break; }
+            }
+            const tail = source.slice(at, close);
+            const methodMatch = tail.match(/\bmethod\s*:\s*['"](GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)['"]/i);
+            if (methodMatch) return methodMatch[1];
+            return /\bmethod\s*:/.test(tail) ? null : 'GET';
+        };
+        const isStaticBaseIdentifier = (value) => /(?:^|[_.])(?:API|BACKEND|SERVICE|SERVER|HTTP)?_?(?:BASE|URL|HOST|ORIGIN|ENDPOINT)(?:_URL)?$/i.test(value);
         const fetchRe = /\bfetch\s*\(\s*(['"`])([^'"`]+)\1/g;
         let match;
         while ((match = fetchRe.exec(source)) !== null) {
-            const tail = source.slice(match.index, Math.min(source.length, match.index + 700));
-            const methodMatch = tail.match(/\bmethod\s*:\s*['"](GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)['"]/i);
-            add(methodMatch ? methodMatch[1] : 'GET', match[2], match.index, 'fetch');
+            const method = inferredFetchMethod(match.index);
+            if (method) add(method, match[2], match.index, 'fetch');
         }
-
+        // Static concatenation: fetch(API_BASE + '/api/users'). The static
+        // suffix is trustworthy only when its leading variable denotes a base.
+        const fetchConcatRe = /\bfetch\s*\(\s*([A-Za-z_$][\w$.]*)\s*\+\s*(['"`])([^'"`]+)\2/g;
+        while ((match = fetchConcatRe.exec(source)) !== null) {
+            if (!isStaticBaseIdentifier(match[1])) continue;
+            const method = inferredFetchMethod(match.index);
+            if (method) add(method, match[3], match.index, 'fetch-concat');
+        }
         const clientRe = /\b(?:axios|apiClient|httpClient|api|http|client)\s*\.\s*(get|post|put|patch|delete|options|head)\s*\(\s*(['"`])([^'"`]+)\2/gi;
         while ((match = clientRe.exec(source)) !== null) add(match[1], match[3], match.index, 'http-client');
+        const clientConcatRe = /\b(?:axios|apiClient|httpClient|api|http|client)\s*\.\s*(get|post|put|patch|delete|options|head)\s*\(\s*([A-Za-z_$][\w$.]*)\s*\+\s*(['"`])([^'"`]+)\3/gi;
+        while ((match = clientConcatRe.exec(source)) !== null) {
+            if (isStaticBaseIdentifier(match[2])) add(match[1], match[4], match.index, 'http-client-concat');
+        }
+
+        // Resolve imported HTTP wrapper calls with statically known API base.
+        // The method must be a literal or the exported wrapper's default; a
+        // dynamic method is not silently classified as GET.
+        for (const wrapper of resolveHttpWrapperImports(file, wrappers)) {
+            // An imported name shadowed by a local binding is ambiguous without
+            // scope resolution. Prefer missing a candidate to inventing a call.
+            const escapedName = wrapper.localName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            if (new RegExp('\\b(?:const|let|var|function)\\s+' + escapedName + '\\b').test(executable)) continue;
+            const escaped = wrapper.localName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const callPattern = new RegExp("\\b" + escaped + "\\s*(?:<[^\\n;]{0,180}>)?\\s*\\(\\s*(['\"\\x60])([^'\"\\x60]+)\\1\\s*(?:,\\s*(['\"])(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\\3)?", "gi");
+            let bound;
+            while ((bound = callPattern.exec(source)) !== null) {
+                // Reject a non-literal second argument (or generic dynamic
+                // method); allow a lone path argument only when default GET is
+                // explicit in the exported wrapper signature.
+                const tail = source.slice(bound.index + bound[0].length).trimStart();
+                const method = bound[4] || (tail.startsWith(')') ? wrapper.defaultMethod : null);
+                if (!method) continue;
+                const rawPath = joinPath(wrapper.base, bound[2]);
+                add(method, rawPath, bound.index, 'imported-http-wrapper', true);
+            }
+        }
 
         // axios({ url: '/api/...', method: 'POST' }) and similar request configs.
         const configRe = /\baxios\s*\(\s*\{([^}]{0,1200})\}/gi;
@@ -238,6 +418,7 @@ export function extractClientApiCalls(files = []) {
             const pathMatch = match[1].match(/\b(?:url|uri)\s*:\s*(['"`])([^'"`]+)\1/);
             if (!pathMatch) continue;
             const methodMatch = match[1].match(/\bmethod\s*:\s*(['"])(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\1/i);
+            if (/\bmethod\s*:/.test(match[1]) && !methodMatch) continue;
             add(methodMatch ? methodMatch[2] : 'GET', pathMatch[2], match.index, 'axios-config');
         }
     }
@@ -263,7 +444,7 @@ function commonSuffixSegments(left, right) {
  * or dynamically constructed URL is left unknown rather than reported broken.
  */
 export function analyzeApiContracts(files = [], backendEndpoints = []) {
-    const clientCalls = extractClientApiCalls(files);
+    const clientCalls = extractClientApiCalls(files, backendEndpoints);
     const routes = (backendEndpoints || []).map((endpoint) => ({
         ...endpoint,
         normalizedPath: normalizeContractPath(endpoint.path),
@@ -274,7 +455,11 @@ export function analyzeApiContracts(files = [], backendEndpoints = []) {
     let unknownCalls = 0;
 
     for (const call of clientCalls) {
-        const exactPath = routes.filter((route) => route.normalizedPath === call.path);
+        const exactPath = routes.filter((route) => {
+            const left = route.normalizedPath.split('/').filter(Boolean);
+            const right = call.path.split('/').filter(Boolean);
+            return left.length === right.length && left.every((part,index) => part === right[index] || part === ':param' || right[index] === ':param');
+        });
         const exactMethod = exactPath.find((route) => route.method === call.method);
         if (exactMethod) { matchedCalls++; continue; }
 

@@ -6,6 +6,7 @@
  * verification, or runtime-proven behavior.
  */
 import { stableAnalysisHash } from './unifiedAnalysisModel.js';
+import { identifyCodeLanguage, maskLanguageNonCode } from './languageIntelligence.js';
 
 const arr = (value) => Array.isArray(value) ? value : [];
 const normPath = (value) => String(value || '').replace(/\\/g, '/').replace(/^\.\//, '');
@@ -24,10 +25,22 @@ function finding(ruleId, title, file, line, message, severity = 'low', confidenc
     };
 }
 
+// One source-line split per source revision, rather than per function. The
+// original string identity guard also handles callers mutating a file record.
+const sourceLineCache = new WeakMap();
+function cachedSourceLines(file) {
+    const source = typeof file?.content === 'string' ? file.content : '';
+    const cached = sourceLineCache.get(file);
+    if (cached?.source === source) return cached.lines;
+    const lines = source.split('\n');
+    sourceLineCache.set(file, { source, lines });
+    return lines;
+}
+
 function functionText(fn, filesByPath) {
     const file = filesByPath.get(normPath(fn.file));
     if (!file || typeof file.content !== 'string') return String(fn.code || '');
-    const lines = file.content.split('\n');
+    const lines = cachedSourceLines(file);
     const start = Number(fn.line);
     const end = Number(fn.endLine ?? fn.line);
     if (!Number.isInteger(start) || start < 1 || !Number.isInteger(end) || end < start || start > lines.length) return String(fn.code || '');
@@ -177,10 +190,14 @@ function analyzePathConditions(functions, filesByPath, limits) {
         const code = functionText(fn, filesByPath);
         if (!code) continue;
         analyzed++;
+        // Conditions shown inside comments, documentation, or user-visible
+        // strings are not executable branch guards. Preserve line offsets.
+        const language = identifyCodeLanguage(fn.file);
+        const codeOnly = language ? maskLanguageNonCode(code, language) : code;
         const tests = [];
         const re = /\bif\s*\(\s*(!\s*)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\)/g;
         let match;
-        while ((match = re.exec(code))) {
+        while ((match = re.exec(codeOnly))) {
             tests.push({ variable: match[2], negated: Boolean(match[1]), offset: match.index, line: (Number(fn.line) || 1) + code.slice(0, match.index).split('\n').length - 1 });
         }
         for (let i = 0; i < tests.length; i++) {

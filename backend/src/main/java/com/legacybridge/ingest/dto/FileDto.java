@@ -1,5 +1,6 @@
 package com.legacybridge.ingest.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.constraints.NotBlank;
 
 /**
@@ -7,6 +8,7 @@ import jakarta.validation.constraints.NotBlank;
  * note on the `files.content` column). Optional/nullable: older clients or
  * cached local-only snapshots may not send it.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record FileDto(
         @NotBlank String path,
         String language,

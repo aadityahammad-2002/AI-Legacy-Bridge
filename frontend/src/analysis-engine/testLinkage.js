@@ -24,11 +24,17 @@ function candidateSourcePaths(testPath) {
         const baseStem = base.replace(/\.(?:test|spec)$/i, '').replace(/_test$/i, '').replace(/^test_/i, '');
         const extensions = ext ? [ext] : [];
         for (const extra of extensions) candidates.add(`${baseStem}${extra}`);
-        // Common source-language alternates allow `.test.tsx` to link `.tsx`,
-        // and `.spec.js` to link `.js` without guessing another basename.
-        for (const alternative of ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.java', '.kt', '.cs']) {
-            candidates.add(`${baseStem}${alternative}`);
-        }
+        // Keep fallback conventions in the test's language family. A file
+        // named `order.test.ts` must not imply coverage of `order.py` just
+        // because it shares a basename. Cross-language links require actual
+        // import/call evidence instead of path coincidence.
+        const siblings = {
+            '.ts': ['.tsx', '.mts', '.cts'], '.tsx': ['.ts', '.mts', '.cts'],
+            '.mts': ['.ts', '.tsx', '.cts'], '.cts': ['.ts', '.tsx', '.mts'],
+            '.js': ['.jsx', '.mjs', '.cjs'], '.jsx': ['.js', '.mjs', '.cjs'],
+            '.mjs': ['.js', '.jsx', '.cjs'], '.cjs': ['.js', '.jsx', '.mjs'],
+        };
+        for (const alternative of siblings[ext] || []) candidates.add(`${baseStem}${alternative}`);
     };
 
     addSiblingVariants(stem);
@@ -82,17 +88,38 @@ export function analyzeTestLinkage(files = [], dependencies = [], functionConnec
     }
 
     // Naming is a fallback only, used when no stronger imported/reference link
-    // exists for a test. It is intentionally low/medium confidence.
+    // exists for a test. Keep the confidence low; no proof of runtime coverage.
     const linkedTests = new Set([...linksByKey.values()].map((link) => link.testFile));
+    const byBasename = new Map();
+    for (const sourceFile of productionPaths) {
+        const basename = sourceFile.split('/').pop();
+        if (!byBasename.has(basename)) byBasename.set(basename, []);
+        byBasename.get(basename).push(sourceFile);
+    }
     for (const testFile of testPaths) {
         if (linkedTests.has(testFile)) continue;
-        for (const candidate of candidateSourcePaths(testFile)) {
-            if (productionPaths.has(candidate)) {
-                addLink(candidate, testFile, 'filename-convention', 'low', {
-                    type: 'path-convention', testPath: testFile, candidatePath: candidate,
-                });
-                break;
-            }
+        const candidates = candidateSourcePaths(testFile);
+        let exactMatch = false;
+        for (const candidate of candidates) {
+            if (!productionPaths.has(candidate)) continue;
+            addLink(candidate, testFile, 'filename-convention', 'low', {
+                type: 'path-convention', testPath: testFile, candidatePath: candidate,
+            });
+            exactMatch = true;
+            break;
+        }
+        if (exactMatch) continue;
+        // Split test/source trees (tests/test_order.py -> app/order.py) are
+        // common. Recover the link only when a same-language basename is
+        // globally unique and, for a named workspace root, remains within it.
+        const testRoot = testFile.split('/')[0];
+        const hasWorkspaceRoot = !['tests', 'test', '__tests__', 'src'].includes(testRoot);
+        const matches = [...new Set(candidates.flatMap((candidate) => byBasename.get(candidate.split('/').pop()) || []))]
+            .filter((path) => !hasWorkspaceRoot || path.split('/')[0] === testRoot);
+        if (matches.length === 1) {
+            addLink(matches[0], testFile, 'filename-convention', 'low', {
+                type: 'unique-basename-convention', testPath: testFile, candidatePath: matches[0],
+            });
         }
     }
 

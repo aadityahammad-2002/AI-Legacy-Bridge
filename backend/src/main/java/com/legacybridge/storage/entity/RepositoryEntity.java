@@ -1,6 +1,7 @@
 package com.legacybridge.storage.entity;
 
 import jakarta.persistence.*;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -41,6 +42,18 @@ public class RepositoryEntity {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(columnDefinition = "jsonb")
     private List<Map<String, Object>> duplicates;
+
+    /** Exact JSON request from the Analysis Engine, including currently-unknown sections.
+     * Not reconstructed from normalized tables: full round-trip fidelity matters. */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "analysis_snapshot", columnDefinition = "jsonb")
+    private JsonNode analysisSnapshot;
+
+    @Column(name = "revision", nullable = false)
+    private long revision;
+
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt = Instant.now();
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
@@ -118,6 +131,30 @@ public class RepositoryEntity {
 
     public void setDuplicates(List<Map<String, Object>> duplicates) {
         this.duplicates = duplicates;
+    }
+
+    public JsonNode getAnalysisSnapshot() {
+        return analysisSnapshot;
+    }
+
+    public void setAnalysisSnapshot(JsonNode analysisSnapshot) {
+        this.analysisSnapshot = analysisSnapshot;
+    }
+
+    public long getRevision() {
+        return revision;
+    }
+
+    public void setRevision(long revision) {
+        this.revision = revision;
+    }
+
+    public Instant getUpdatedAt() {
+        return updatedAt;
+    }
+
+    public void setUpdatedAt(Instant updatedAt) {
+        this.updatedAt = updatedAt;
     }
 
     public Instant getCreatedAt() {

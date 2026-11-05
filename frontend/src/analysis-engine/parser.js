@@ -141,6 +141,61 @@ function maskSourceNonCode(content, filename) {
 }
 
 /**
+ * Security-only lexical cleanup. The general extractors retain their existing
+ * masks; these two extra masks prevent executable-code heuristics from treating
+ * JavaScript regex source or literal JSX documentation as executable calls.
+ * All replacements preserve character offsets/newlines for evidence lines.
+ */
+function maskSecurityRegExpLiterals(source, codeMask, filename) {
+    if (!/\.(?:js|jsx|ts|tsx|mjs|cjs|vue|svelte)$/i.test(filename || '')) return codeMask;
+    const out = codeMask.split('');
+    const blank = (i) => { if (source[i] !== '\n' && source[i] !== '\r') out[i] = ' '; };
+    for (let i = 0; i < source.length; i++) {
+        if (source[i] !== '/' || out[i] !== '/' || source[i + 1] === '/' || source[i + 1] === '*') continue;
+        // Regex is an expression value, unlike division or path-like operators.
+        let prev = i - 1;
+        while (prev >= 0 && /\s/.test(codeMask[prev])) prev--;
+        const prevChar = prev >= 0 ? codeMask[prev] : '';
+        const before = codeMask.slice(Math.max(0, prev - 16), prev + 1);
+        if (!/[=(:,\[!{;?&|]/.test(prevChar) && !/(?:\breturn|\bthrow|\bcase|\btypeof|\binstanceof|=>)$/.test(before)) continue;
+        let j = i + 1, escaped = false, charClass = false;
+        for (; j < source.length && source[j] !== '\n' && source[j] !== '\r'; j++) {
+            const c = source[j];
+            if (escaped) { escaped = false; continue; }
+            if (c === '\\') { escaped = true; continue; }
+            if (c === '[') { charClass = true; continue; }
+            if (c === ']' && charClass) { charClass = false; continue; }
+            if (c === '/' && !charClass) break;
+        }
+        if (j >= source.length || source[j] !== '/' || j === i + 1) continue;
+        let end = j + 1;
+        while (end < source.length && /[dgimsuvy]/.test(source[end])) end++;
+        for (let k = i; k < end; k++) blank(k);
+        i = end - 1;
+    }
+    return out.join('');
+}
+
+function maskSecurityJsxLiteralText(codeMask, filename) {
+    if (!/\.(?:jsx|tsx)$/i.test(filename || '')) return codeMask;
+    // A JSX text node can contain words such as eval(), but it is not JS.
+    // Curly-braced JSX expressions are deliberately excluded from this mask.
+    return codeMask.replace(/(<\/?[A-Za-z][\w.:-]*(?:\s[^<>]*?)?\s*>)([^<>{}]+)(?=<)/g,
+        (match, tag, text) => tag + text.replace(/[^\n\r]/g, ' '));
+}
+
+function isValidationErrorLiteralAssignment(line, match, value) {
+    const lhs = line.slice(0, match.index).trim();
+    const isErrorsReceiver = /(?:^|\W)(?:errors?|errs?|validationErrors?|fieldErrors?|formErrors?)\s*\.\s*[A-Za-z_$]*$/i.test(lhs) ||
+        /(?:^|\W)(?:errors?|errs?|validationErrors?|fieldErrors?|formErrors?)\s*\[\s*['"][^'"]+['"]\s*\]\s*$/i.test(lhs);
+    const diagnostic = /^(?:required\b|password\s+(?:is|must|does|should|cannot|can't|too|needs)|passwords?\s+do\s+not|(?:current|new|confirm)\s+password\s+(?:is|must)|min(?:imum)?\s+\d+\s+characters?|please\s+(?:enter|provide)|must\s+be|at\s+least|invalid\s+(?:password|input)|does\s+not\s+match|cannot\s+be\s+empty)/i.test(value);
+    const inlineIf = /^\s*if\s*\(.*\)\s*[A-Za-z_$][\w$]*\.\s*$/i.test(lhs);
+    // Error bags store human-readable messages; the `e.password = ...` shape
+    // also occurs in one-line conditional validation blocks.
+    return diagnostic && (isErrorsReceiver || inlineIf);
+}
+
+/**
  * Bounded brace-based end-line estimate used only by regex extractors.
  * AST-backed extractors remain authoritative when available. If a block body
  * cannot be identified, return the declaration line rather than inventing a
@@ -213,6 +268,40 @@ function estimateBracedEndLine(content, startLine, functionName, kind, filename)
 
 function getSecurityScanContent(file) {
     return file && file.content ? maskSourceComments(file.content, file.path || file.name || '') : '';
+}
+
+function isVerifiedEscapedSyntaxRenderer(file, files) {
+    const source = String(file?.content || '');
+    // A generic sanitizer name is not evidence. Require the exact producer,
+    // mapping and sink relationship, plus inspect the imported implementation.
+    const importMatch = source.match(/import\s*\{\s*highlightSyntax\s*\}\s*from\s*['"](\.[^'"]+)['"]/);
+    const htmlSinks = source.match(/dangerouslySetInnerHTML\b/g) || [];
+    // Do not suppress a second, unrelated sink in the same component file.
+    if (htmlSinks.length !== 1 || !importMatch ||
+        !/\bconst\s+lines\s*=\s*file\s*\?\s*highlightSyntax\s*\(\s*file\.content\s*,\s*path\s*\)\s*:\s*\[\s*\]/.test(source) ||
+        !/\blines\.map\s*\(\s*\(\s*html\b/.test(source) ||
+        !/dangerouslySetInnerHTML\s*=\s*\{\{\s*__html\s*:\s*html\s*\}\}/.test(source)) return false;
+    const dir = String(file.path || '').split('/').slice(0,-1).join('/');
+    const segments = (dir ? dir+'/' : '') + importMatch[1];
+    const normalized = [];
+    for (const segment of segments.split('/')) {
+        if (segment === '..') normalized.pop();
+        else if (segment && segment !== '.') normalized.push(segment);
+    }
+    const modulePath = normalized.join('/');
+    const producer = (files || []).find(item => item.path === modulePath);
+    if (!producer) return false;
+    const body = String(producer.content || '');
+    if (!/export\s+function\s+highlightSyntax\s*\(/.test(body) ||
+        !/return\s+code\.split\s*\(\s*['"]\\n['"]\s*\)\.map\s*\(\s*\(?\s*line\b/.test(body) ||
+        !/\b(?:let|const)\s+escaped\s*=\s*esc\(line\)/.test(body) ||
+        !/return\s+escaped\s*;/.test(body)) return false;
+    const escMatch = body.match(/function\s+esc\s*\(\s*s\s*\)\s*\{([\s\S]*?)\}/);
+    if (!escMatch) return false;
+    const esc = escMatch[1];
+    return /s\.replace\(\s*\/\&\/g\s*,\s*['"]&amp;['"]\)/.test(esc) &&
+        /\.replace\(\s*\/\<\/g\s*,\s*['"]&lt;['"]\)/.test(esc) &&
+        /\.replace\(\s*\/\>\/g\s*,\s*['"]&gt;['"]\)/.test(esc);
 }
 
 function isSanitizedPreviewRenderer(content){
@@ -370,7 +459,10 @@ function extractLombokAccessors(content, filename, lines, addFn, extractCode) {
         var hasSetter = classAnnotations.indexOf('Setter') >= 0 || classAnnotations.indexOf('Data') >= 0;
         if (!hasGetter && !hasSetter) continue;
 
-        var fieldMatch = line.match(/^\s*(?:private|protected|public)?\s*(?:final\s+)?[\w<>,\[\]\s]+?\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*(?:=|;)/);
+        // Require a real type token before the field name. Previously the
+        // leading whitespace alone could satisfy the "type" section,
+        // causing @JoinTable(joinColumns = ...) to invent Lombok accessors.
+        var fieldMatch = line.match(/^\s*(?:(?:private|protected|public|static|final|transient|volatile)\s+)*(?:[\w$<>?,.\[\]]+\s+)+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*(?:=|;)/);
         var isDeclarationKeyword = /^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:class|interface|enum|@)/.test(line);
         if (fieldMatch && !isDeclarationKeyword) {
             var fieldName = fieldMatch[1];
@@ -1184,7 +1276,7 @@ const Parser={
         var complexity=1;
         var patterns=isPython
             ? [/\b(?:if|elif|while)\b/g,/\bfor\b/g,/\bexcept\b/g,/\b(?:and|or)\b/g]
-            : [/\bif\s*\(/g,/\bfor\s*\(/g,/\bwhile\s*\(/g,/\bcase\b/g,/\bcatch\s*\(/g,/&&/g,/\|\|/g,/\?\?(?![=])/g,/(?<!\?)\?(?![?.])(?!(?:\s*):)\s*[^:\n]+:/g];
+            : [/\bif\s*\(/g,/\bfor\s*\(/g,/\bwhile\s*\(/g,/\bcase\b/g,/\bcatch\s*\(/g,/&&/g,/\|\|/g,/\?\?(?![=])/g,/(?<!\?)\?(?![?.])\s*[^:\n]*:/g];
         patterns.forEach(function(pattern){var matches=code.match(pattern);if(matches)complexity+=matches.length;});
         var level='low';
         if(complexity>30)level='critical';
@@ -1251,13 +1343,23 @@ const Parser={
             // string literals (including this scanner's own regexes/examples) from
             // being mistaken for code while preserving original line offsets.
             var codeContent=maskSourceNonCode(f.content||'',f.path||f.name||'');
+            codeContent=maskSecurityRegExpLiterals(f.content||'',codeContent,f.path||f.name||'');
+            codeContent=maskSecurityJsxLiteralText(codeContent,f.path||f.name||'');
             var lines=scanContent.split('\n');
             var codeLines=codeContent.split('\n');
             lines.forEach(function(line,idx){
-                var secretPattern=/(?:password|passwd|pwd|secret|api_key|apikey|token|auth)\s*[=:]\s*['"][^'"]{4,}['"]/i;
+                var secretPattern=/(?:password|passwd|pwd|secret|api_key|apikey|token|auth)\s*[=:]\s*(['"])([^'"]{4,})\1/i;
                 var secretMatch=line.match(secretPattern);
                 var activeKey=secretMatch&&codeLines[idx]&&codeLines[idx].slice(secretMatch.index,secretMatch.index+secretMatch[0].search(/\s*[=:]/)).trim();
-                if(!isSecretScanExemptPath(f.path)&&secretMatch&&activeKey&&!/^\s*$/.test(activeKey)&&!line.includes('process.env')&&!line.includes('config.')&&!isPlaceholderSecretValue(secretMatch[0])){
+                // `secret = 'prefix_' + secrets.token_urlsafe(...)` assigns a
+                // computed token, not a hardcoded literal. Also avoid reporting
+                // password-field *validation messages* as stored credentials.
+                var rhsEnd=secretMatch?secretMatch.index+secretMatch[0].length:0;
+                var trailing=secretMatch?line.slice(rhsEnd).trim():'';
+                var concatenatedLiterals=/^(?:\+\s*(?:'[^']*'|"[^"]*"))+\s*(?:[;,})\]]|$)/.test(trailing);
+                var completeLiteral=!trailing||/^[;,})\]]/.test(trailing)||/^\/\//.test(trailing)||concatenatedLiterals;
+                var validationMessage=secretMatch&&isValidationErrorLiteralAssignment(line,secretMatch,secretMatch[2]);
+                if(!isSecretScanExemptPath(f.path)&&secretMatch&&activeKey&&!/^\s*$/.test(activeKey)&&completeLiteral&&!validationMessage&&!line.includes('process.env')&&!line.includes('config.')&&!isPlaceholderSecretValue(secretMatch[0])){
                     issues.push({severity:'high',title:'Hardcoded Secret',file:f.name,path:f.path,line:idx+1,desc:'A credential-shaped assignment appears in executable source. Verify whether the value is live; rotate it if real and move it to an environment variable or secrets manager.',code:line.trim().substring(0,80),confidence:'INFERENCE',confidenceReason:'Assignment shape is present in executable code; this heuristic cannot determine whether the value is live, revoked, or a sample.'});
                 }
             });
@@ -1278,7 +1380,8 @@ const Parser={
             }
             var hasInnerHtmlAssignment=codeContent.match(/innerHTML\s*=/);
             var hasDangerousHtmlRender=codeContent.match(/dangerouslySetInnerHTML/);
-            var isSafePreviewRender=!hasInnerHtmlAssignment&&hasDangerousHtmlRender&&isSanitizedPreviewRenderer(f.content||'');
+            var isSafePreviewRender=!hasInnerHtmlAssignment&&hasDangerousHtmlRender&&
+                (isSanitizedPreviewRenderer(f.content||'')||isVerifiedEscapedSyntaxRenderer(f,files));
             var htmlValueRegex=/dangerouslySetInnerHTML\s*[:=]\s*\{\{?\s*__html\s*:\s*([^}]+)\}/g;
             var allHtmlValuesLiteral=true;
             var foundHtmlValue=false;
@@ -1294,8 +1397,8 @@ const Parser={
                 var xssLine=codeLines.findIndex(function(l){return /innerHTML\s*=|dangerouslySetInnerHTML/.test(l);});
                 issues.push({severity:'high',title:'Potential XSS Sink',file:f.name,path:f.path,line:xssLine>=0?xssLine+1:undefined,desc:'An executable HTML injection sink was found. Exploitability depends on the value reaching this sink and the escaping/sanitization path.',code:xssLine>=0?lines[xssLine].trim().substring(0,160):'',confidence:'INFERENCE',confidenceReason:'Sink-only heuristic; source-to-sink reachability and sanitizer behavior were not proven.'});
             }
-            if(codeContent.includes('eval(')){
-                var evalLine=codeLines.findIndex(function(l){return l.includes('eval(');});
+            if(!/\.(?:py|pyw|pyi)$/i.test(f.path||f.name||'')&&/(?<![\w$.])eval\s*\(/.test(codeContent)){
+                var evalLine=codeLines.findIndex(function(l){return /(?<![\w$.])eval\s*\(/.test(l);});
                 issues.push({severity:'medium',title:'Dynamic Code Execution',file:f.name,path:f.path,line:evalLine+1,desc:'eval() executes arbitrary code. Avoid if possible or validate input strictly.',code:evalLine>=0?lines[evalLine].trim().substring(0,80):'',confidence:'INFERENCE',confidenceReason:'Executable eval call detected; source and runtime input reachability are not proven.'});
             }
             var functionMatch=codeContent.match(/\b(?:new\s+)?Function\s*\(/);
@@ -1303,9 +1406,10 @@ const Parser={
                 var functionLine=codeLines.findIndex(function(l){return /\b(?:new\s+)?Function\s*\(/.test(l);});
                 issues.push({severity:'medium',title:'Function Constructor',file:f.name,path:f.path,line:functionLine>=0?functionLine+1:undefined,desc:'Function constructor is similar to eval(). Consider alternatives.',code:functionLine>=0?lines[functionLine].trim().substring(0,120):'',confidence:'INFERENCE',confidenceReason:'Executable Function-constructor call detected; the argument source and runtime reachability are not proven.'});
             }
-            var execMatch=codeContent.match(/(?:child_process|cp)\.\w*[Ee]xec\w*\s*\(/)||codeContent.match(/\b(?:exec|execSync|spawn|spawnSync)\s*\(/);
+            var commandRe=/(?:\b(?:child_process|cp)\.\s*(?:exec|execSync|execFile|execFileSync|spawn|spawnSync)\s*\(|(?<![\w$.])(?:exec|execSync|spawn|spawnSync)\s*\()/;
+            var execMatch=codeContent.match(commandRe);
             if(!isNonProductionPath(f.path)&&execMatch){
-                var commandLine=codeLines.findIndex(function(l){return /(?:child_process|cp)\.\w*[Ee]xec\w*\s*\(|\b(?:exec|execSync|spawn|spawnSync)\s*\(/.test(l);});
+                var commandLine=codeLines.findIndex(function(l){return commandRe.test(l);});
                 issues.push({severity:'medium',title:'Command Execution',file:f.name,path:f.path,line:commandLine>=0?commandLine+1:undefined,desc:'A command-execution API was found. Injection risk depends on how arguments are constructed and whether a shell is involved.',code:commandLine>=0?lines[commandLine].trim().substring(0,120):'',confidence:'INFERENCE',confidenceReason:'API-use heuristic; attacker-controlled input flow and shell semantics were not proven.'});
             }
             if(codeContent.match(/console\.(log|debug|info)\(/)){
@@ -1340,15 +1444,16 @@ const Parser={
             // TODO/FIXME comment mining is handled by quality.js, which scans comment tokens
             // directly. `scanContent` intentionally masks comments for security rules.
             // Python-specific security checks
-            var isPyFile=f.name.endsWith('.py')||f.name.endsWith('.pyw');
+            var securityFileName=String(f.name||f.path||'');
+            var isPyFile=/\.(?:py|pyw)$/i.test(securityFileName);
             if(isPyFile&&codeContent){
                 // eval() and exec() - arbitrary code execution
-                if(codeContent.match(/\beval\s*\(/)){
-                    var evalLine=codeLines.findIndex(function(l){return l.match(/\beval\s*\(/);});
+                if(/(?<![\w$.])eval\s*\(/.test(codeContent)){
+                    var evalLine=codeLines.findIndex(function(l){return /(?<![\w$.])eval\s*\(/.test(l);});
                     issues.push({severity:'high',title:'Python eval()',file:f.name,path:f.path,line:evalLine>=0?evalLine+1:undefined,desc:'eval() executes arbitrary Python code. Use ast.literal_eval() for safe parsing.',code:evalLine>=0?lines[evalLine].trim().substring(0,80):''});
                 }
-                if(codeContent.match(/\bexec\s*\(/)){
-                    var execLine=codeLines.findIndex(function(l){return l.match(/\bexec\s*\(/);});
+                if(/(?<![\w$.])exec\s*\(/.test(codeContent)){
+                    var execLine=codeLines.findIndex(function(l){return /(?<![\w$.])exec\s*\(/.test(l);});
                     issues.push({severity:'high',title:'Python exec()',file:f.name,path:f.path,line:execLine>=0?execLine+1:undefined,desc:'exec() executes arbitrary Python code. This is almost always a security risk.',code:execLine>=0?lines[execLine].trim().substring(0,80):''});
                 }
                 // pickle - deserialization attacks
@@ -1365,8 +1470,15 @@ const Parser={
                     issues.push({severity:'high',title:'OS Command Execution',file:f.name,path:f.path,line:osLine>=0?osLine+1:undefined,desc:'os.system()/os.popen() are vulnerable to command injection. Use subprocess with shell=False.',code:osLine>=0?lines[osLine].trim().substring(0,80):''});
                 }
                 // __import__ - dynamic imports
-                if(codeContent.match(/__import__\s*\(/)){
-                    issues.push({severity:'medium',title:'Dynamic Import',file:f.name,path:f.path,desc:'__import__() with user input can load arbitrary modules. Validate module names against an allowlist.',code:''});
+                // Literal module names are static imports in practice. A computed
+                // name remains a candidate, not a proven user-controlled value.
+                var importCall=/(?<![\w.])__import__\s*\(/g;
+                var importMatch;
+                while((importMatch=importCall.exec(codeContent))!==null){
+                    var argument=(scanContent.slice(importCall.lastIndex).match(/^\s*(?:(['"])(?:\\.|(?!\1)[^\\])*?\1|([^,\n)]+))/)||[]);
+                    if(argument[1]&&!argument[2])continue;
+                    var importLine=codeContent.slice(0,importMatch.index).split('\n').length;
+                    issues.push({severity:'medium',title:'Dynamic Import',file:f.name,path:f.path,line:importLine,desc:'__import__() with a computed module name may load unintended modules. Review the provenance of the argument.',code:lines[importLine-1]?.trim().substring(0,120)||'',confidence:'INFERENCE',confidenceReason:'Computed import argument, not evidence that the module name is user controlled.'});
                 }
                 // Bare except clauses
                 var bareExcepts=(codeContent.match(/\bexcept\s*:/g)||[]).length;
@@ -1374,7 +1486,7 @@ const Parser={
                     issues.push({severity:'medium',title:'Bare Except Clauses',file:f.name,path:f.path,desc:bareExcepts+' bare except: clauses found. These catch all exceptions including SystemExit and KeyboardInterrupt.',code:''});
                 }
                 // assert in non-test files
-                if(!f.name.includes('test')&&!f.path.includes('test')){
+                if(!/test/i.test(String(f.name||''))&&!/test/i.test(String(f.path||''))){
                     var assertCount=(codeContent.match(/\bassert\s+/g)||[]).length;
                     if(assertCount>5){
                         issues.push({severity:'low',title:'Assert in Production',file:f.name,path:f.path,desc:assertCount+' assert statements found. Assertions are stripped with python -O. Use proper validation.',code:''});
@@ -1616,6 +1728,27 @@ const Parser={
                         }
                     }
 
+                    // Class fields can contain callable arrow/function values, e.g.
+                    // class Store { save = async () => {...} }. Babel/Acorn model
+                    // these as PropertyDefinition/FieldDefinition, not MethodDefinition.
+                    // Only include *callable* initializers; ordinary data fields are not functions.
+                    if((node.type==='PropertyDefinition'||node.type==='FieldDefinition'||node.type==='ClassProperty')&&
+                        node.key&&node.value&&
+                        (node.value.type==='ArrowFunctionExpression'||node.value.type==='FunctionExpression')){
+                        var fieldName=node.computed?null:(node.key.name||node.key.value);
+                        if(typeof fieldName==='string'&&fieldName){
+                            var fieldLine=(node.loc?node.loc.start.line:1)+scriptOffset;
+                            var fieldEnd=(node.loc?node.loc.end.line:fieldLine)+scriptOffset;
+                            addFn({
+                                name:fieldName,file:filename,line:fieldLine,endLine:fieldEnd,
+                                code:extractCode(fieldLine,fieldEnd),isTopLevel:false,isExported:false,
+                                type:'method',isClassMethod:true,className:activeClass||undefined,
+                                extractionProvenance:'ast',extractionConfidence:'syntax-verified',
+                                endLineConfidence:'ast'
+                            });
+                        }
+                    }
+
                     // Property with method shorthand: { foo() {} }
                     if(node.type==='Property'&&node.method&&node.key){
                         var name=node.key.name||node.key.value;
@@ -1714,15 +1847,20 @@ const Parser={
         }else if(isPython){
             diagnostics.mode='python-regex';
             // Python: extract classes, functions, async functions, decorators, and methods
-            var currentClass=null;
-            var classIndent=-1;
+            var classScopes=[];
+            var functionScopes=[];
             var decorators=[];
-            var currentFunctionIndent=-1;
             var pythonScanLines=Parser.stripPythonNonCode(content).split('\n');
             lines.forEach(function(line,idx){
                 var scanLine=pythonScanLines[idx]||'';
                 var trimmed=scanLine.trimStart();
                 var indent=(scanLine.match(/^(\s*)/)||['',''])[1].length;
+                // Dedentation closes nested defs/classes but not enclosing classes.
+                // This is lexical ownership, not runtime type inference.
+                if(trimmed){
+                    while(functionScopes.length&&functionScopes[functionScopes.length-1]>=indent)functionScopes.pop();
+                    while(classScopes.length&&classScopes[classScopes.length-1].indent>=indent)classScopes.pop();
+                }
 
                 // Track decorators
                 if(trimmed.match(/^@\w/)){
@@ -1734,7 +1872,9 @@ const Parser={
                 var classMatch=scanLine.match(/^(\s*)class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[\(:]?/);
                 if(classMatch){
                     var cIndent=classMatch[1].length;
-                    var className=classMatch[2];
+                    var localClassName=classMatch[2];
+                    var className=classScopes.length&&!functionScopes.length
+                        ?classScopes[classScopes.length-1].name+'.'+localClassName:localClassName;
                     var cEndLine=idx+1;
                     for(var i=idx+1;i<lines.length;i++){
                         var nl=pythonScanLines[i]||'';
@@ -1757,19 +1897,15 @@ const Parser={
                         type:isDataclass?'dataclass':isABC?'abstract_class':'class',
                         decorators:hasDecorator?decorators.slice():undefined
                     });
-                    currentClass=className;
-                    classIndent=cIndent;
-                    currentFunctionIndent=-1;
+                    classScopes.push({name:className,indent:cIndent});
                     decorators=[];
                     return;
                 }
 
-                // Reset class context when dedented
-                if(currentClass!==null&&indent<=classIndent&&trimmed!==''){
-                    currentClass=null;
-                    classIndent=-1;
-                    currentFunctionIndent=-1;
-                }
+                // Active class context is the innermost enclosing class that
+                // has not been closed by indentation.
+                var currentClass=classScopes.length?classScopes[classScopes.length-1].name:null;
+                var classIndent=classScopes.length?classScopes[classScopes.length-1].indent:-1;
 
                 // Detect function/method definitions (including async def)
                 var m=scanLine.match(/^(\s*)(?:async\s+)?def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/);
@@ -1779,9 +1915,12 @@ const Parser={
                     var isAsync=scanLine.match(/\basync\s+def\b/)!==null;
                     // A nested def inside a method is not itself a class method.
                     // Track the last enclosing def's indentation before binding.
-                    var nestedWithinFunction=currentFunctionIndent>=0&&fIndent>currentFunctionIndent;
+                    // A local class nested *inside* a function still owns its
+                    // own methods. Only defs nested in a function belonging
+                    // to the current class are ordinary nested functions.
+                    var nestedWithinFunction=functionScopes.some(function(fnIndent){return fnIndent>classIndent;});
                     var isMethod=currentClass!==null&&fIndent>classIndent&&!nestedWithinFunction;
-                    currentFunctionIndent=fIndent;
+                    functionScopes.push(fIndent);
                     var isDunder=name.startsWith('__')&&name.endsWith('__');
                     var isPrivate=name.startsWith('_')&&!isDunder;
                     var isSelf=scanLine.match(/def\s+\w+\s*\(\s*self[\s,)]/);
@@ -1796,7 +1935,9 @@ const Parser={
                         var nextLine=pythonScanLines[i]||'';
                         if(nextLine.trim()==='')continue;
                         var nextIndent=(nextLine.match(/^(\s*)/)||['',''])[1].length;
-                        if(nextIndent<=fIndent&&nextLine.trim()!==''){endLine=i;break;}
+                        if(nextIndent<=fIndent&&nextLine.trim()!=='') break;
+                        // The function range ends at its last nonblank body line;
+                        // trailing blank separators are not part of the function.
                         endLine=i+1;
                     }
 
@@ -2724,40 +2865,18 @@ const Parser={
                     var root=tree.rootNode;
                     var fnSet=new Set(fnNames);
 
-                    // Determine if an identifier node is a definition name (not a usage)
-                    function isPyDefName(node){
-                        var p=node.parent;
-                        if(!p)return false;
-                        // Function/class definition name: def foo / class Foo
-                        if((p.type==='function_definition'||p.type==='class_definition')&&
-                            p.childForFieldName('name')===node)return true;
-                        // Parameter names in function signatures
-                        if(p.type==='parameters'||p.type==='lambda_parameters')return true;
-                        if((p.type==='typed_parameter'||p.type==='default_parameter'||
-                            p.type==='typed_default_parameter')&&p.children[0]===node)return true;
-                        if(p.type==='list_splat_pattern'||p.type==='dictionary_splat_pattern')return true;
-                        // For loop target: for x in ...
-                        if(p.type==='for_statement'&&p.childForFieldName('left')===node)return true;
-                        // With statement target: with x as y
-                        if(p.type==='as_pattern'&&p.childForFieldName('alias')===node)return true;
-                        // Exception handler: except E as e
-                        if(p.type==='except_clause')return false; // the exception type IS a reference
-                        // Comprehension targets: [x for x in ...]
-                        if(p.type==='for_in_clause'&&p.childForFieldName('left')===node)return true;
-                        return false;
-                    }
-
-                    // Walk the CST: every identifier that matches a function name
-                    // and is NOT a definition is counted as a usage reference.
-                    // tree-sitter naturally excludes identifiers inside strings/comments
-                    // because those are parsed as string/comment nodes, not identifiers.
+                    // Count only a `call` node with a direct identifier callee.
+                    // Assignments, type annotations, return references, decorator
+                    // names and object.method() are NOT direct function calls.
+                    // Receiver calls are handled separately by callGraph.js.
                     function walkPy(node){
-                        if(node.type==='identifier'&&fnSet.has(node.text)&&!isPyDefName(node)){
-                            calls[node.text]++;
+                        if(node.type==='call'){
+                            var callee=node.childForFieldName?.('function');
+                            if(callee?.type==='identifier'&&fnSet.has(callee.text)){
+                                calls[callee.text]++;
+                            }
                         }
-                        for(var i=0;i<node.childCount;i++){
-                            walkPy(node.child(i));
-                        }
+                        for(var i=0;i<node.childCount;i++) walkPy(node.child(i));
                     }
                     walkPy(root);
                     tree.delete();
@@ -2835,11 +2954,10 @@ const Parser={
                     if(node.type==='CallExpression'){
                         var callee=node.callee;
                         if(callee.type==='Identifier'&&fnSet.has(callee.name)){
-                            var line=callee.loc?callee.loc.start.line:0;
-                            // Don't count if this is the definition line
-                            if(!defLines[callee.name]||defLines[callee.name]!==line){
-                                calls[callee.name]++;
-                            }
+                            // CallExpression nodes are executable calls, not
+                            // declaration identifiers. The old definition-line
+                            // exclusion dropped same-line recursive calls.
+                            calls[callee.name]++;
                         }
                         // Also check arguments for function references
                         node.arguments.forEach(function(arg){

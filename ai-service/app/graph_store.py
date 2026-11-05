@@ -78,6 +78,20 @@ def sync_repository(repository_id: str) -> int:
     return len(edges)
 
 
+def delete_repository(repository_id: str) -> int:
+    """Remove only this repository's derived Neo4j nodes; safe to repeat."""
+    driver = get_driver()
+    with driver.session() as session:
+        result = session.run(
+            "MATCH (f:File {repository_id: $repo_id}) DETACH DELETE f",
+            repo_id=repository_id,
+        )
+        summary = result.consume()
+        count = summary.counters.nodes_deleted
+    log.info("Removed %d graph nodes for repository %s", count, repository_id)
+    return count
+
+
 def get_neighborhood(repository_id: str, node_id: str, hops: int | None = None) -> list[str]:
     """
     Everything reachable from node_id within `hops` steps, in EITHER

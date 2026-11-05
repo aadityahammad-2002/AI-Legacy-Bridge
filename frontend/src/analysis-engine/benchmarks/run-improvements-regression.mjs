@@ -38,8 +38,10 @@ const apiNoiseFiles = [
 const discoveredNoiseRoutes = discoverEndpoints(apiNoiseFiles);
 const noiseContracts = analyzeApiContracts(apiNoiseFiles, discoveredNoiseRoutes);
 assert.deepEqual(discoveredNoiseRoutes.map((route) => route.path), ['/api/real']);
-assert.equal(noiseContracts.clientCalls, 1);
-assert.equal(noiseContracts.unknownCalls, 1);
+// With backend-route context, an unrelated /api URL is no longer
+// accepted solely for having an API-looking prefix.
+assert.equal(noiseContracts.clientCalls, 0);
+assert.equal(noiseContracts.unknownCalls, 0);
 
 const prepared = prepareRepositoryFiles([
     { path: 'src/main.js', content: "import React from 'react';\nimport { run } from './service.js';\nrun();" },

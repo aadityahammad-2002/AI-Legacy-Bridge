@@ -1,3 +1,4 @@
+import { maskLanguageNonCode } from './languageIntelligence.js';
 /**
  * db.js — Phase 3, batch 4 (Data/DB layer).
  *
@@ -106,6 +107,79 @@ function parseDjangoModels(files) {
     return tables;
 }
 
+/** Resolve SQLAlchemy declarative table metadata already present in Python source.
+ * Restricted to class bodies with an explicit __tablename__; ordinary Python
+ * classes and assignment examples must not become database entities. */
+function parseSqlAlchemyModels(files) {
+    const tables = [];
+    for (const file of files.filter(f => /\.(?:py|pyw)$/i.test(f.path))) {
+        const source = String(file.content || '');
+        const executable = maskLanguageNonCode(source, 'Python');
+        const classRe = /^class\s+([A-Za-z_]\w*)\s*\([^\n)]*\)\s*:\s*$/gm;
+        const matches = [...source.matchAll(classRe)];
+        for (let i = 0; i < matches.length; i++) {
+            const start = matches[i].index + matches[i][0].length;
+            const end = i + 1 < matches.length ? matches[i + 1].index : source.length;
+            const body = source.slice(start, end);
+            const codeBody = executable.slice(start, end);
+            const declaration = /^\s+__tablename__\s*=\s*(['"])([A-Za-z_]\w*)\1/gm;
+            let tableName = null;
+            for (const table of body.matchAll(declaration)) {
+                if (codeBody.slice(table.index, table.index + table[0].length).includes('__tablename__')) {
+                    tableName = table[2]; break;
+                }
+            }
+            if (!tableName) continue;
+            const columns = [], foreignKeys = [];
+            const codeLines = codeBody.split('\n');
+            for (const [index, line] of body.split('\n').entries()) {
+                if (!/\b(?:mapped_column|Column)\s*\(/.test(codeLines[index] || '')) continue;
+                const field = line.match(/^\s+([A-Za-z_]\w*)\s*(?::\s*Mapped\s*\[([^\n]+?)\])?\s*=\s*(?:mapped_column|Column)\s*\(/);
+                if (!field) continue;
+                const rest = line.slice(field.index + field[0].length);
+                const type = (field[2] || rest.match(/^\s*([A-Za-z_]\w*)/)?.[1] || 'unknown').trim();
+                columns.push({ name: field[1], type });
+                const fk = rest.match(/\bForeignKey\s*\(\s*['"]([A-Za-z_]\w*)\.([A-Za-z_]\w*)['"]/);
+                if (fk) foreignKeys.push({ column: field[1], referencesTable: fk[1] });
+            }
+            tables.push({ name: tableName, file: file.path, columns, foreignKeys, source: 'sqlalchemy' });
+        }
+    }
+    return tables;
+}
+
+/** Merge physical tables described in multiple representations (DDL, JPA,
+ * SQLAlchemy, migration files) rather than miscounting one table as several.
+ * Keep the original table contract and deterministic first-source precedence. */
+function deduplicateTables(tables) {
+    const byName = new Map();
+    for (const table of tables) {
+        const key = table.name.toLowerCase();
+        if (!byName.has(key)) {
+            byName.set(key, {
+                ...table,
+                columns: [...table.columns],
+                foreignKeys: [...table.foreignKeys],
+            });
+            continue;
+        }
+        const existing = byName.get(key);
+        const columns = new Set(existing.columns.map(c => c.name.toLowerCase()));
+        for (const column of table.columns) {
+            if (!columns.has(column.name.toLowerCase())) {
+                existing.columns.push(column);
+                columns.add(column.name.toLowerCase());
+            }
+        }
+        const edges = new Set(existing.foreignKeys.map(fk => `${fk.column.toLowerCase()}|${fk.referencesTable.toLowerCase()}`));
+        for (const fk of table.foreignKeys) {
+            const edge = `${fk.column.toLowerCase()}|${fk.referencesTable.toLowerCase()}`;
+            if (!edges.has(edge)) { existing.foreignKeys.push(fk); edges.add(edge); }
+        }
+    }
+    return [...byName.values()];
+}
+
 /** Renders a Mermaid `erDiagram` block from the extracted table list. */
 function toMermaidErDiagram(tables) {
     const lines = ['erDiagram'];
@@ -125,12 +199,15 @@ function toMermaidErDiagram(tables) {
 }
 
 export function extractDatabaseSchema(files) {
-    const tables = [...parseSqlSchema(files), ...parseJpaEntities(files), ...parseDjangoModels(files)];
+    const tables = deduplicateTables([
+        ...parseSqlSchema(files), ...parseJpaEntities(files),
+        ...parseDjangoModels(files), ...parseSqlAlchemyModels(files),
+    ]);
     return {
         tables,
         mermaidErDiagram: tables.length ? toMermaidErDiagram(tables) : null,
         confidence: 'FACT',
-        confidenceReason: 'Tables/columns/foreign keys parsed directly from CREATE TABLE SQL, @Entity/@Column/@ManyToOne annotations, or Django models.Model field declarations.',
+        confidenceReason: 'Tables/columns/foreign keys parsed directly from CREATE TABLE SQL, JPA mappings, Django models or SQLAlchemy declarative assignments; duplicate physical table names are merged.',
     };
 }
 

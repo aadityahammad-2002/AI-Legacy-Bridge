@@ -27,7 +27,7 @@ export const SUPPORTED_CODE_LANGUAGES = Object.freeze(PROFILES.map(([name]) => n
 export function identifyCodeLanguage(path) {
     const name = String(path || '').replace(/\\/g, '/').split('/').pop();
     const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
-    if (name === 'Dockerfile' || name === 'Makefile') return 'Shell';
+    if (/^(dockerfile|makefile)$/i.test(name)) return 'Shell';
     return EXT_LANGUAGE.get(ext) || null;
 }
 
@@ -237,6 +237,12 @@ export function extractLanguageFunctions(content, filename, options = {}) {
             const name = match[1];
             if (!name || skipNames.has(name.toLowerCase()) || seen.has(`${i}|${name}`)) break;
             if (language === 'Java' && !isLikelyJavaDeclaration(scan, i, name, masked, offsets)) continue;
+            // Java constructors have no return type. They are not ordinary methods;
+            // keep their identity separate from callable method metrics.
+            if (language === 'Java' && original.slice(0, i).some(previous => new RegExp('\\b(?:class|record|enum)\\s+' + name + '\\b').test(previous))) {
+                const prefix = line.slice(0, line.search(new RegExp('\\b' + name + '\\s*\\('))).trim();
+                if (/^(?:(?:public|private|protected))?$/.test(prefix)) continue;
+            }
             // Multi-language bare prototypes and interfaces are declarations, not
             // executable bodies. Avoid attributing calls to them as facts.
             let endLine = i + 1;

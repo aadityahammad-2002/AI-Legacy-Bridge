@@ -165,10 +165,10 @@ def index_repository(repository_id: str) -> int:
         try:
             graph_store.sync_repository(repository_id)
         except Exception as e:
-            # Graph sync failing must not fail the whole index request —
-            # AI Explorer just loses the GraphRAG bonus/neighborhood for
-            # this repository until Neo4j is reachable again.
+            # Return an error to the durable Java worker: vector rows are already
+            # committed, but a missing graph mirror must be retried until healthy.
             log.error("Neo4j sync failed for repository %s: %s", repository_id, e)
+            raise
     else:
         log.info("LEGACYBRIDGE_NEO4J_PASSWORD not set — skipping graph sync (vector-only mode)")
 

@@ -68,12 +68,24 @@ export function computeDependencyLayerViolations(files = [], dependencies = []) 
 // ---------------------------------------------------------------------
 
 function moduleOf(path) {
-    const parts = path.split('/');
-    // Skip common non-semantic roots so "src/main/java/com/x/orders/..." groups
-    // by "orders", not "src". Best-effort, heuristic by nature.
-    const skip = new Set(['src', 'main', 'java', 'kotlin', 'com', 'org', 'app', 'lib']);
-    const meaningful = parts.filter((p) => !skip.has(p));
-    return meaningful.length > 1 ? meaningful[0] : (parts[0] || 'root');
+    const parts = String(path || '').replace(/\\/g, '/').split('/').filter(Boolean);
+    const folders = parts.slice(0, -1);
+    const src = folders.indexOf('src');
+    // JVM Maven/Gradle layout: retain the first actual package/domain segment,
+    // not the wrapper "backend", the source set "main", or "com".
+    const languageRoot = folders.findIndex((part, i) => src >= 0 && i > src && ['java', 'kotlin', 'scala'].includes(part));
+    if (languageRoot >= 0) {
+        let pkg = folders.slice(languageRoot + 1);
+        if (['com', 'org', 'net', 'io', 'dev', 'edu'].includes(pkg[0]) && pkg.length >= 2) pkg = pkg.slice(2);
+        const framework = new Set(['service', 'services', 'controller', 'controllers', 'repository', 'repositories', 'dto', 'entity', 'model', 'config', 'util', 'utils']);
+        const meaningful = pkg.find((part) => !framework.has(part));
+        return meaningful || pkg[0] || 'root';
+    }
+    // JS/TS/Python source roots should group by the first source-domain folder.
+    if (src >= 0 && src + 1 < folders.length) return folders[src + 1];
+    const app = folders.indexOf('app');
+    if (app >= 0 && app + 1 < folders.length) return folders[app + 1];
+    return folders.find((part) => !['backend', 'frontend', 'server', 'client', 'lib'].includes(part)) || folders[0] || 'root';
 }
 
 /**
@@ -103,16 +115,16 @@ export function computeModuleBoundaries({ files, dependencies }) {
         outboundByModule.get(from).add(key.split('->')[1]);
     });
 
-    const modules = [...new Set(moduleOfFile.values())].map((name) => ({
-        name,
-        fileCount: [...moduleOfFile.values()].filter((m) => m === name).length,
-        touchesModules: outboundByModule.has(name) ? outboundByModule.get(name).size : 0,
-    }));
+    const fileCounts = new Map();
+    for (const name of moduleOfFile.values()) fileCounts.set(name, (fileCounts.get(name) || 0) + 1);
+    const modules = [...fileCounts.entries()].map(([name, fileCount]) => ({
+        name, fileCount, touchesModules: outboundByModule.get(name)?.size || 0,
+    })).sort((a, b) => a.name.localeCompare(b.name));
 
     const edges = [...edgeCounts.entries()].map(([key, count]) => {
         const [from, to] = key.split('->');
         return { from, to, count };
-    });
+    }).sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
 
     // Weak-boundary flag: a module reaching directly into 4+ other modules.
     const weakBoundaries = modules.filter((m) => m.touchesModules >= 4);
@@ -120,7 +132,7 @@ export function computeModuleBoundaries({ files, dependencies }) {
     return {
         modules, edges, weakBoundaries,
         confidence: 'INFERENCE',
-        confidenceReason: 'Module = top meaningful path segment (heuristic) — real module boundaries may not follow the folder layout.',
+        confidenceReason: 'Source-root/package-relative domain folder heuristic; actual modules may not follow folder conventions.',
     };
 }
 

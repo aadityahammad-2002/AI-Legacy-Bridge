@@ -1,6 +1,9 @@
 package com.legacybridge.query;
 
 import com.legacybridge.ingest.dto.*;
+import com.legacybridge.sync.AiSyncJobRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.legacybridge.query.dto.RepositoryDetailResponse;
 import com.legacybridge.query.dto.RepositorySummaryDto;
 import com.legacybridge.storage.repository.*;
@@ -20,6 +23,8 @@ import java.util.UUID;
 @Service
 public class RepositoryQueryService {
 
+    private final ObjectMapper objectMapper;
+    private final AiSyncJobRepository syncJobs;
     private final RepositoryEntityRepository repositoryRepository;
     private final FileRepository fileRepository;
     private final ClassRepository classRepository;
@@ -36,7 +41,11 @@ public class RepositoryQueryService {
                                    ImportRepository importRepository,
                                    DependencyRepository dependencyRepository,
                                    GraphNodeRepository graphNodeRepository,
-                                   GraphEdgeRepository graphEdgeRepository) {
+                                   GraphEdgeRepository graphEdgeRepository,
+                                   ObjectMapper objectMapper,
+                                   AiSyncJobRepository syncJobs) {
+        this.objectMapper = objectMapper;
+        this.syncJobs = syncJobs;
         this.repositoryRepository = repositoryRepository;
         this.fileRepository = fileRepository;
         this.classRepository = classRepository;
@@ -47,17 +56,33 @@ public class RepositoryQueryService {
         this.graphEdgeRepository = graphEdgeRepository;
     }
 
-    /** Most-recent-first list for the Upload Page. */
+    /** Metadata-only SQL projection; does not load the large JSON snapshot. */
+    @Transactional(readOnly = true)
     public List<RepositorySummaryDto> listRecent() {
-        return repositoryRepository.findAll().stream()
-                .sorted((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()))
-                .map(r -> new RepositorySummaryDto(
-                        r.getId(), r.getName(), r.getSource(), r.getUrl(),
-                        r.getHealthScore(), r.getHealthGrade(), r.getCreatedAt()
-                ))
-                .toList();
+        return repositoryRepository.findRecentSummaries();
     }
 
+    /** Pagination is additive: /list remains backwards-compatible for the UI. */
+    @Transactional(readOnly = true)
+    public org.springframework.data.domain.Page<RepositorySummaryDto> listRecentPage(int page, int size) {
+        return repositoryRepository.findRecentSummariesPage(
+                org.springframework.data.domain.PageRequest.of(
+                        Math.max(0, page), Math.max(1, Math.min(100, size))));
+    }
+
+    /** New ingests return their exact original payload, not a lossy synthetic
+     * reconstruction. Pre-migration repositories still use legacy reconstruction. */
+    @Transactional(readOnly = true)
+    public Optional<JsonNode> getStoredAnalysis(UUID repositoryId) {
+        var repository = repositoryRepository.findById(repositoryId);
+        if (repository.isEmpty()) return Optional.empty();
+        if (repository.get().getAnalysisSnapshot() != null) {
+            return Optional.of(repository.get().getAnalysisSnapshot().deepCopy());
+        }
+        return getDetail(repositoryId).map(objectMapper::valueToTree);
+    }
+
+    @Transactional(readOnly = true)
     public Optional<RepositoryDetailResponse> getDetail(UUID repositoryId) {
         return repositoryRepository.findById(repositoryId).map(repo -> {
             List<FileDto> files = fileRepository.findByRepositoryId(repositoryId).stream()
@@ -118,10 +143,13 @@ public class RepositoryQueryService {
      */
     @Transactional
     public boolean delete(UUID repositoryId) {
-        if (!repositoryRepository.existsById(repositoryId)) {
-            return false;
-        }
-        repositoryRepository.deleteById(repositoryId);
+        // Lock the exact row so concurrent deletion/re-ingestion cannot race.
+        var existing = repositoryRepository.findByIdForUpdate(repositoryId);
+        if (existing.isEmpty()) return false;
+        repositoryRepository.delete(existing.get());
+        repositoryRepository.flush();
+        // Outbox job has no FK so cleanup survives parent cascade deletion.
+        syncJobs.enqueueDelete(repositoryId);
         return true;
     }
 }

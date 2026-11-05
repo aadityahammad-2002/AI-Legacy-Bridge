@@ -68,6 +68,16 @@
             <version>0.31.1</version>
         </dependency>
 
+        <!-- Versioned PostgreSQL schema migrations; preserve existing databases using
+             baseline-on-migrate=1 in application configuration. -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
