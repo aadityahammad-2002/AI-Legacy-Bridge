@@ -110,7 +110,55 @@ def _fetch_repo_data(repository_id: str):
         )
         dependencies = cur.fetchall()
 
-    return methods, classes, dependencies
+        cur.execute(
+            "SELECT path, content FROM files WHERE repository_id = %s ORDER BY path",
+            (repository_id,),
+        )
+        files = cur.fetchall()
+
+    return methods, classes, dependencies, files
+
+
+# Text-like source files whose content is absent from method chunks still
+# need semantic discovery. The original method chunks are preserved; these
+# fallback chunks only cover otherwise unrepresented files.
+_FALLBACK_EXTENSIONS = frozenset({
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".rs", ".cs",
+    ".rb", ".php", ".sql", ".json", ".yaml", ".yml", ".toml", ".xml",
+    ".md", ".sh", ".ps1", ".properties", ".gradle", ".html", ".css",
+    ".env", ".txt", ".dockerfile",
+})
+MAX_FALLBACK_FILE_CHARS = 12000
+
+
+def _file_fallback_chunks(repository_id: str, files: list[dict],
+                          indexed_paths: set[str]) -> list[dict]:
+    result = []
+    for file in files:
+        path = file["path"]
+        content = file.get("content") or ""
+        lower_path = path.lower()
+        # Avoid adding likely secret-bearing configuration files to semantic
+        # recall automatically. Explicit read_file still follows stored source.
+        sensitive = (lower_path.rsplit("/", 1)[-1].startswith(".env")
+                     or any(token in lower_path for token in
+                            ("/secrets/", "/credentials/", "private_key", ".pem", ".p12")))
+        if (path in indexed_paths or sensitive or not content.strip()
+                or len(content) > MAX_FALLBACK_FILE_CHARS
+                or not any(path.lower().endswith(ext) for ext in _FALLBACK_EXTENSIONS)):
+            continue
+        # Avoid splitting inside a single massive line: cap each chunk as well.
+        for i in range(0, len(content), MAX_CHUNK_CHARS):
+            piece = content[i:i + MAX_CHUNK_CHARS]
+            if not piece.strip():
+                continue
+            result.append({
+                "repository_id": repository_id, "file_path": path,
+                "class_name": None, "function_name": None,
+                "content": piece,
+                "metadata": {"type": "file_fallback", "part": i // MAX_CHUNK_CHARS + 1},
+            })
+    return result
 
 
 def index_repository(repository_id: str) -> int:
@@ -123,8 +171,16 @@ def index_repository(repository_id: str) -> int:
     If embedding generation or any insert fails, the old index remains intact.
     The graph mirror is synced only after the vector transaction commits.
     """
-    methods, classes, dependencies = _fetch_repo_data(repository_id)
+    methods, classes, dependencies, files = _fetch_repo_data(repository_id)
     chunks = build_chunks(repository_id, methods, classes, dependencies)
+    chunks.extend(_file_fallback_chunks(
+        repository_id, files, {c["file_path"] for c in chunks}
+    ))
+    if files and not chunks:
+        raise RuntimeError("Repository has source files but yielded zero indexable chunks")
+    model_id = embedding.model_identity()
+    for chunk in chunks:
+        chunk["metadata"]["embeddingModel"] = model_id
     contents = [chunk["content"] for chunk in chunks]
     vectors = embedding.embed_batch(contents) if contents else []
 
@@ -167,7 +223,7 @@ def index_repository(repository_id: str) -> int:
         except Exception as e:
             # Return an error to the durable Java worker: vector rows are already
             # committed, but a missing graph mirror must be retried until healthy.
-            log.error("Neo4j sync failed for repository %s: %s", repository_id, e)
+            log.error("Neo4j sync failed for repository %s (%s)", repository_id, type(e).__name__)
             raise
     else:
         log.info("LEGACYBRIDGE_NEO4J_PASSWORD not set — skipping graph sync (vector-only mode)")
@@ -193,10 +249,10 @@ def find_similar(repository_id: str, query_embedding: list[float], top_k: int) -
             SELECT file_path, class_name, function_name, content,
                    1 - (embedding <=> %s) AS similarity
             FROM code_chunks
-            WHERE repository_id = %s
+            WHERE repository_id = %s AND metadata->>'embeddingModel' = %s
             ORDER BY embedding <=> %s
             LIMIT %s
             """,
-            (query_vec, repository_id, query_vec, top_k),
+            (query_vec, repository_id, embedding.model_identity(), query_vec, top_k),
         )
         return cur.fetchall()

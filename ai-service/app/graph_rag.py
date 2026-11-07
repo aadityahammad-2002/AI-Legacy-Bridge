@@ -1,33 +1,25 @@
-"""
-GraphRAG: combines vector similarity search (rag.py, pgvector) with graph
-structural traversal (graph_store.py, Neo4j) into a single ranked context,
-instead of treating them as two separate, unrelated retrieval paths the way
-the original ContextRetrievalService did (vector chunks and focused-node
-dependencies were just concatenated, never cross-referenced).
+"""Repository-scoped vector + optional graph distance re-ranking.
 
-The core idea: a chunk that is BOTH semantically similar to the question
-AND structurally close (few hops away in the dependency graph) to whatever
-the user is currently looking at is more likely to actually be relevant
-than one that only scores well on one axis. This re-ranks vector hits by
-combining their cosine similarity with a graph-distance bonus.
+Neo4j is a derived cache of PostgreSQL dependencies. Use one batched Neo4j
+query for all vector candidates; if Neo4j is disabled, missing, or fails,
+fall back to a bounded PostgreSQL file dependency walk. Retrieval itself
+must remain available without any graph database.
 """
 import logging
+import math
 from dataclasses import dataclass
-from . import rag, graph_store, config
+from . import rag, graph_store, config, dependency_graph
 
 log = logging.getLogger("legacybridge.graph_rag")
-
-# How much a graph-distance bonus can boost a chunk's score. A chunk 1 hop
-# away gets close to the full bonus; further away, less; unreachable/no
-# anchor available, no bonus (pure vector similarity still applies).
 GRAPH_BONUS_WEIGHT = 0.15
+MAX_CANDIDATE_POOL = 48
 
 
 @dataclass
 class RankedChunk:
     file_path: str
     class_name: str | None
-    function_name: str
+    function_name: str | None
     content: str
     similarity: float
     graph_distance: int | None
@@ -35,66 +27,80 @@ class RankedChunk:
 
 
 def _graph_bonus(distance: int | None) -> float:
-    if distance is None:
+    if distance is None or distance < 0:
         return 0.0
-    if distance <= 0:
-        return GRAPH_BONUS_WEIGHT
-    # Decays with distance: 1 hop -> ~0.10, 2 hops -> ~0.05, 3+ -> ~0.02
     return GRAPH_BONUS_WEIGHT / (1 + distance)
 
 
+def _distances(repository_id: str, anchor_path: str | None, candidates: list[dict]):
+    if not anchor_path or not candidates:
+        return {}
+    targets = list(dict.fromkeys(str(c["file_path"]) for c in candidates))
+    distances = {anchor_path: 0} if anchor_path in targets else {}
+    pending = [target for target in targets if target != anchor_path]
+    if not pending:
+        return distances
+    if config.NEO4J_PASSWORD:
+        try:
+            neo4j_distances = graph_store.batch_shortest_path_distances(
+                repository_id, anchor_path, pending
+            )
+            distances.update({p: d for p, d in neo4j_distances.items()
+                              if p in pending and d is not None and 0 <= d <= dependency_graph.MAX_GRAPH_HOPS})
+        except Exception as exc:
+            log.warning("Neo4j ranking unavailable; falling back to PostgreSQL (%s)", type(exc).__name__)
+    remaining = [p for p in pending if p not in distances]
+    if remaining:
+        try:
+            distances.update(dependency_graph.distance_map(repository_id, anchor_path, remaining))
+        except Exception as exc:
+            log.warning("PostgreSQL structural ranking unavailable; using vector-only (%s)", type(exc).__name__)
+    return distances
+
+
 def retrieve_ranked_chunks(repository_id: str, query_embedding: list[float],
-                            anchor_path: str | None, top_k: int = 8,
-                            candidate_pool: int = 20) -> list[RankedChunk]:
-    """
-    anchor_path: the file the user is currently anchored to (open file or
-    focused node), used to compute graph-distance bonuses. If None, this
-    is equivalent to plain vector search (no graph re-ranking possible).
-    """
-    # Pull a larger candidate pool than top_k so re-ranking has room to
-    # promote a structurally-close-but-slightly-lower-similarity chunk
-    # above a purely-similar-but-unrelated one.
-    candidates = rag.find_similar(repository_id, query_embedding, candidate_pool)
-
-    ranked: list[RankedChunk] = []
-    for c in candidates:
-        distance = None
-        if anchor_path and config.NEO4J_PASSWORD:
-            try:
-                if c["file_path"] == anchor_path:
-                    distance = 0
-                else:
-                    distance = graph_store.shortest_path_distance(
-                        repository_id, anchor_path, c["file_path"]
-                    )
-            except Exception as e:
-                # Neo4j down/unreachable shouldn't break AI Explorer — just
-                # degrade to pure vector ranking for this chunk.
-                log.warning("Graph distance lookup failed, degrading to vector-only: %s", e)
-                distance = None
-
-        combined = c["similarity"] + _graph_bonus(distance)
+                           anchor_path: str | None, top_k: int = 8,
+                           candidate_pool: int = 20) -> list[RankedChunk]:
+    if top_k <= 0:
+        return []
+    top_k = min(top_k, MAX_CANDIDATE_POOL)
+    pool = min(MAX_CANDIDATE_POOL, max(top_k, candidate_pool))
+    candidates = rag.find_similar(repository_id, query_embedding, pool)
+    distances = _distances(repository_id, anchor_path, candidates)
+    ranked = []
+    for candidate in candidates:
+        try:
+            similarity = float(candidate["similarity"])
+        except (ValueError, TypeError):
+            continue
+        if not math.isfinite(similarity):
+            continue
+        distance = distances.get(candidate["file_path"])
         ranked.append(RankedChunk(
-            file_path=c["file_path"],
-            class_name=c.get("class_name"),
-            function_name=c.get("function_name"),
-            content=c["content"],
-            similarity=c["similarity"],
+            file_path=candidate["file_path"],
+            class_name=candidate.get("class_name"),
+            function_name=candidate.get("function_name"),
+            content=candidate["content"],
+            similarity=similarity,
             graph_distance=distance,
-            combined_score=combined,
+            combined_score=similarity + _graph_bonus(distance),
         ))
-
-    ranked.sort(key=lambda r: r.combined_score, reverse=True)
+    ranked.sort(key=lambda item: (-item.combined_score, -item.similarity, item.file_path))
     return ranked[:top_k]
 
 
 def get_structural_neighborhood(repository_id: str, node_id: str) -> list[str]:
-    """Thin wrapper so callers (context_retrieval/agent_graph) don't need to
-    know whether Neo4j is configured — degrades to empty list if not."""
-    if not config.NEO4J_PASSWORD:
+    if not node_id:
         return []
+    if config.NEO4J_PASSWORD:
+        try:
+            neighbors = graph_store.get_neighborhood(repository_id, node_id)
+            if neighbors:
+                return neighbors[:dependency_graph.MAX_NEIGHBORS]
+        except Exception as exc:
+            log.warning("Neo4j neighborhood unavailable; falling back to PostgreSQL (%s)", type(exc).__name__)
     try:
-        return graph_store.get_neighborhood(repository_id, node_id)
-    except Exception as e:
-        log.warning("Graph neighborhood lookup failed: %s", e)
+        return dependency_graph.neighborhood(repository_id, node_id)
+    except Exception as exc:
+        log.warning("PostgreSQL neighborhood unavailable; returning empty neighborhood (%s)", type(exc).__name__)
         return []

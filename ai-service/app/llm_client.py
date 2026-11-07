@@ -22,7 +22,9 @@ _last_call_timestamp = 0.0
 
 
 class LlmError(Exception):
-    pass
+    def __init__(self, message: str, http_status: int = 503):
+        super().__init__(message)
+        self.http_status = http_status
 
 
 @dataclass
@@ -68,12 +70,11 @@ def chat_with_tools(messages: list[dict], tools: list[dict] | None = None,
         )
 
     estimated_tokens = _estimate_tokens(messages, tools)
-    wait_seconds = token_budget.seconds_until_budget_available(estimated_tokens)
-    if wait_seconds > 0:
-        raise LlmError(
-            f"Token budget for this minute is used up — about {int(wait_seconds) + 1} "
-            "more seconds until it frees up automatically. Try again shortly."
-        )
+    ticket, wait_seconds = token_budget.reserve(estimated_tokens)
+    if ticket is None:
+        detail = ("Request exceeds the configured token budget" if wait_seconds == float("inf")
+                  else f"Token budget exhausted; retry in roughly {int(wait_seconds) + 1} seconds")
+        raise LlmError(detail, http_status=429)
 
     request_body: dict = {
         "model": config.LLM_MODEL,
@@ -85,14 +86,16 @@ def chat_with_tools(messages: list[dict], tools: list[dict] | None = None,
         if tool_choice:
             request_body["tool_choice"] = tool_choice
 
-    root = _post_with_retry(request_body)
-
-    choices = root.get("choices")
-    if not choices:
-        raise LlmError("LLM provider returned an empty response")
-
+    try:
+        root = _post_with_retry(request_body)
+        choices = root.get("choices")
+        if not choices:
+            raise LlmError("LLM provider returned an empty response")
+    except Exception:
+        token_budget.cancel(ticket)
+        raise
     actual_tokens = (root.get("usage") or {}).get("total_tokens", estimated_tokens)
-    token_budget.record(actual_tokens)
+    token_budget.finish(ticket, actual_tokens)
 
     message = choices[0]["message"]
     content = message.get("content")
@@ -125,23 +128,47 @@ def _post_with_retry(request_body: dict) -> dict:
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
                 retry_after = e.response.headers.get("Retry-After")
-                wait_seconds = float(retry_after) if retry_after else (attempt + 1)
+                try:
+                    wait_seconds = float(retry_after) if retry_after else float(attempt + 1)
+                except (TypeError, ValueError):
+                    wait_seconds = float(attempt + 1)
+                if not 0 <= wait_seconds <= config.MAX_RETRY_WAIT_SECONDS:
+                    wait_seconds = config.MAX_RETRY_WAIT_SECONDS + 1
                 attempt += 1
                 if attempt > config.MAX_RETRIES or wait_seconds > config.MAX_RETRY_WAIT_SECONDS:
                     raise LlmError(
                         f"The LLM provider's rate limit is exhausted for now — it's asking to wait "
-                        f"{int(wait_seconds)} seconds. Try again shortly, or ask a smaller/simpler question."
+                        f"{int(wait_seconds)} seconds. Try again shortly, or ask a smaller/simpler question.",
+                        http_status=429,
                     ) from e
                 time.sleep(wait_seconds)
                 continue
-            raise
+            status = e.response.status_code
+            if status == 402:
+                raise LlmError("LLM provider requires payment or available API credits (HTTP 402)",
+                               http_status=402) from e
+            if status in (401, 403):
+                raise LlmError(f"LLM provider API key or model access rejected (HTTP {status})") from e
+            if status >= 500:
+                if attempt < config.MAX_RETRIES:
+                    attempt += 1
+                    time.sleep(min(float(attempt), config.MAX_RETRY_WAIT_SECONDS))
+                    continue
+                raise LlmError(f"LLM provider temporarily unavailable (HTTP {status})") from e
+            raise LlmError(f"LLM provider rejected the request (HTTP {status})") from e
+        except httpx.RequestError as e:
+            if attempt < config.MAX_RETRIES:
+                attempt += 1
+                time.sleep(min(float(attempt), config.MAX_RETRY_WAIT_SECONDS))
+                continue
+            raise LlmError("Could not connect to LLM provider; check network access") from e
 
 
 def _call_with_timeout(request_body: dict) -> dict:
     try:
         with httpx.Client(timeout=config.CALL_TIMEOUT_SECONDS) as client:
             response = client.post(
-                f"{config.LLM_BASE_URL}/chat/completions",
+                f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
                 json=request_body,
             )

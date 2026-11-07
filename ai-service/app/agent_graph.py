@@ -29,9 +29,10 @@ Two things this version has that the old manual loop did NOT:
 """
 import json as _json
 import logging
+import threading
+import weakref
 from typing import Annotated, TypedDict
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-from langchain_core.messages.utils import trim_messages
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage, RemoveMessage
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -40,7 +41,7 @@ from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 
-from . import config, token_budget, guardrails, langchain_tools
+from . import config, token_budget, guardrails, langchain_tools, provider_errors, llm_client
 
 log = logging.getLogger("legacybridge.agent_graph")
 
@@ -92,6 +93,7 @@ class AgentState(TypedDict):
     touched_files: list[str]
     blocked: bool
     block_reason: str | None
+    tool_rounds: int
 
 
 def _system_prompt(context_text: str) -> str:
@@ -149,6 +151,88 @@ def _blocked_response_node(state: AgentState) -> dict:
     return {"messages": [AIMessage(content=f"I can't help with that one — {reason}")]}
 
 
+def _trim_complete_turns(messages: list, max_turns: int = 6,
+                         max_history_chars: int = 50000) -> list:
+    """Keep recent whole human/assistant/tool conversation turns.
+
+    A turn starts at a HumanMessage. Never begin history with an orphan
+    ToolMessage; preserve AI tool-call+ToolMessage adjacency.
+    """
+    groups = []
+    current = []
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            if current:
+                groups.append(current)
+            current = [message]
+        elif current:
+            current.append(message)
+    if current:
+        groups.append(current)
+    selected = []
+    size = 0
+    for group in reversed(groups[-max_turns:]):
+        group_size = sum(len(str(getattr(m, "content", ""))) for m in group)
+        if selected and size + group_size > max_history_chars:
+            break
+        selected.insert(0, group)
+        size += group_size
+    return [message for group in selected for message in group]
+
+
+def _estimate_prompt_tokens(messages: list) -> int:
+    """Approximate cost including Gemini content blocks and tool JSON."""
+    import json
+    chars = 0
+    for message in messages:
+        content = getattr(message, "content", "")
+        chars += len(content) if isinstance(content, str) else len(json.dumps(content, default=str))
+        chars += len(json.dumps(getattr(message, "tool_calls", []) or [], default=str))
+    return chars // 4 + 1200
+
+
+def _messages_to_prune(messages: list, kept: list) -> list:
+    """Remove older complete turns from the checkpoint, not just the prompt.
+
+    `add_messages` assigns each message an id, so RemoveMessage can delete
+    the same ids from the in-memory checkpoint without orphaning tools.
+    """
+    kept_ids = {m.id for m in kept if getattr(m, "id", None)}
+    return [RemoveMessage(id=m.id) for m in messages
+            if getattr(m, "id", None) and m.id not in kept_ids]
+
+
+def _provider_invoke(llm, messages: list):
+    estimated = _estimate_prompt_tokens(messages)
+    ticket, wait = token_budget.reserve(estimated)
+    if ticket is None:
+        suffix = "Request exceeds the configured per-minute token limit" if wait == float("inf") else (
+            f"Token budget temporarily exhausted; retry in roughly {int(wait) + 1} seconds")
+        raise provider_errors.ProviderFailure(suffix, 429)
+    try:
+        # Share request pacing with the guardrail/code-assist HTTP adapter.
+        # LangChain's native model clients otherwise bypassed the configured
+        # provider call gap entirely, exhausting low-RPM free quotas.
+        llm_client._wait_for_pacing()
+        response = llm.invoke(messages)
+    except Exception as exc:
+        token_budget.cancel(ticket)
+        classified = provider_errors.classify(exc)
+        if classified is not None:
+            raise classified from exc
+        raise
+    metadata = getattr(response, "response_metadata", {}) or {}
+    usage = getattr(response, "usage_metadata", None) or metadata.get("token_usage", {})
+    actual = usage.get("total_tokens") if isinstance(usage, dict) else None
+    if actual is None and isinstance(usage, dict):
+        inputs = usage.get("input_tokens")
+        outputs = usage.get("output_tokens")
+        if inputs is not None or outputs is not None:
+            actual = (inputs or 0) + (outputs or 0)
+    token_budget.finish(ticket, actual if actual is not None else estimated)
+    return response
+
+
 def _build_agent_node(repository_id: str, cache: dict, tools_list):
     llm_with_tools = _make_llm(repository_id, cache, tools_list)
 
@@ -157,31 +241,15 @@ def _build_agent_node(repository_id: str, cache: dict, tools_list):
         # TokenBudgetTracker) before every model call in the loop, not just
         # the first one — a long tool-calling conversation can burn budget
         # mid-loop just as easily as on the first call.
-        rough_chars = sum(len(getattr(m, "content", "") or "") for m in state["messages"])
-        estimated_tokens = (rough_chars // 4) + 1200
-        wait = token_budget.seconds_until_budget_available(estimated_tokens)
-        if wait > 0:
-            raise RuntimeError(
-                f"Token budget for this minute is used up — about {int(wait) + 1} "
-                "more seconds until it frees up automatically. Try again shortly."
-            )
-
         system = SystemMessage(content=_system_prompt(state["context_text"]))
-        # Trim history defensively so a very long thread can't grow
-        # unbounded — token_counter=len here means "count messages", so
-        # this keeps roughly the last 12 turns rather than doing precise
-        # token counting (good enough for a safety cap; the token_budget
-        # check above is what actually protects the real token limit).
-        trimmed = trim_messages(
-            state["messages"], max_tokens=24, token_counter=len,
-            strategy="last", include_system=False, allow_partial=False,
-        )
-        response = llm_with_tools.invoke([system, *trimmed])
-
-        usage = getattr(response, "response_metadata", {}).get("token_usage", {})
-        token_budget.record(usage.get("total_tokens", estimated_tokens))
-
-        return {"messages": [response]}
+        # Keep complete conversation turns (Human -> AI -> Tool -> AI). A
+        # naive last-N-messages trim may orphan ToolMessages or AI tool calls,
+        # which some providers reject with an invalid tool-call sequence.
+        trimmed = _trim_complete_turns(state["messages"], max_turns=6)
+        response = _provider_invoke(llm_with_tools, [system, *trimmed])
+        # Checkpoint retention must be bounded too, not merely the outgoing
+        # prompt; remove only older *complete turns* after a successful call.
+        return {"messages": [*_messages_to_prune(state["messages"], trimmed), response]}
 
     return agent_node
 
@@ -189,27 +257,57 @@ def _build_agent_node(repository_id: str, cache: dict, tools_list):
 def _agent_edge(state: AgentState) -> str:
     last = state["messages"][-1]
     tool_calls = getattr(last, "tool_calls", None)
-    return "tools" if tool_calls else "end"
+    if not tool_calls:
+        return "end"
+    if state.get("tool_rounds", 0) >= MAX_TOOL_ROUNDS:
+        return "limit"
+    return "tools"
 
 
 def _build_touched_files_node(repository_id: str, cache: dict):
     def track_touched_files(state: AgentState) -> dict:
-        # Runs right after the ToolNode executes — re-derive which files
-        # each just-executed tool call touched (cache hit, effectively
-        # free) so the API response can populate sourceFiles.
+        """Use the actual ToolMessages, never replay repository tools.
+
+        Artifacts are attached by @tool(response_format='content_and_artifact').
+        A failed read carries no files. Only replies matching the latest
+        assistant tool-call ids are considered, not historical calls.
+        """
         touched = list(state.get("touched_files", []))
-        for m in state["messages"]:
-            if isinstance(m, AIMessage) and m.tool_calls:
-                for call in m.tool_calls:
-                    files = langchain_tools.collect_touched_files(
-                        call["name"], _json.dumps(call["args"]), repository_id, cache
-                    )
-                    for f in files:
-                        if f not in touched:
-                            touched.append(f)
-        return {"touched_files": touched}
+        messages = state["messages"]
+        batch_start = next((i for i in range(len(messages) - 1, -1, -1)
+                            if isinstance(messages[i], AIMessage)
+                            and getattr(messages[i], "tool_calls", None)), None)
+        if batch_start is not None:
+            ids = {call["id"] for call in messages[batch_start].tool_calls}
+            for reply in messages[batch_start + 1:]:
+                if not isinstance(reply, ToolMessage) or reply.tool_call_id not in ids:
+                    continue
+                artifact = getattr(reply, "artifact", None)
+                if not isinstance(artifact, dict):
+                    continue
+                for path in artifact.get("touched_files", []):
+                    if isinstance(path, str) and path and path not in touched:
+                        touched.append(path)
+        return {"touched_files": touched, "tool_rounds": state.get("tool_rounds", 0) + 1}
 
     return track_touched_files
+
+
+def _tool_limit_node(state: AgentState) -> dict:
+    """Close pending tool-call ids before returning a bounded terminal answer.
+
+    Executing an unbounded fifth tool batch or ending with unmatched tool
+    calls both create provider-specific failures on the next turn.
+    """
+    last = state["messages"][-1]
+    closed = [ToolMessage(content="Tool round limit reached; not executed",
+                          tool_call_id=call["id"])
+              for call in getattr(last, "tool_calls", [])]
+    closed.append(AIMessage(content=(
+        "I reached the safe tool-call limit for this question. "
+        "Please narrow the request to a file or function so I can continue accurately."
+    )))
+    return {"messages": closed}
 
 
 def build_graph(repository_id: str, cache: dict):
@@ -222,12 +320,14 @@ def build_graph(repository_id: str, cache: dict):
     graph.add_node("blocked", _blocked_response_node)
     graph.add_node("agent", agent_node)
     graph.add_node("tools", ToolNode(tools_list))
+    graph.add_node("tool_limit", _tool_limit_node)
     graph.add_node("track_touched_files", touched_files_node)
 
     graph.set_entry_point("guardrail")
     graph.add_conditional_edges("guardrail", _guardrail_edge, {"blocked": "blocked", "continue": "agent"})
     graph.add_edge("blocked", END)
-    graph.add_conditional_edges("agent", _agent_edge, {"tools": "tools", "end": END})
+    graph.add_conditional_edges("agent", _agent_edge, {"tools": "tools", "limit": "tool_limit", "end": END})
+    graph.add_edge("tool_limit", END)
     graph.add_edge("tools", "track_touched_files")
     graph.add_edge("track_touched_files", "agent")
 
@@ -237,16 +337,32 @@ def build_graph(repository_id: str, cache: dict):
 # One compiled graph per repository_id (tools/cache are per-repository, not
 # per-request, so the graph itself can be reused across requests for the
 # same repo — only the checkpointer's thread_id varies per conversation).
-_graph_cache: dict[str, object] = {}
+_graph_cache: dict[str, tuple[int, object]] = {}
+_cache_lock = threading.RLock()
+# Weak keys prevent abandoned browser session ids from retaining locks
+# permanently. The active invoke holds a strong reference to its lock.
+_session_locks = weakref.WeakValueDictionary()
 
 
-def _get_graph(repository_id: str):
-    if repository_id not in _graph_cache:
-        _graph_cache[repository_id] = build_graph(repository_id, cache={})
-    return _graph_cache[repository_id]
+def evict_repository(repository_id: str) -> None:
+    """Discard ephemeral session memory after a repository is deleted."""
+    with _cache_lock:
+        _graph_cache.pop(repository_id, None)
 
 
-def run(repository_id: str, context_text: str, question: str, thread_id: str) -> dict:
+def _get_graph(repository_id: str, revision: int):
+    # Lock cache construction; concurrent sessions may ask after re-ingestion.
+    with _cache_lock:
+        cached = _graph_cache.get(repository_id)
+        if cached is None or cached[0] != revision:
+            graph = build_graph(repository_id, cache={})
+            _graph_cache[repository_id] = (revision, graph)
+            return graph
+        return cached[1]
+
+
+def run(repository_id: str, context_text: str, question: str, thread_id: str,
+        revision: int = 0) -> dict:
     """
     thread_id scopes conversation memory — pass the same thread_id across
     requests to keep multi-turn context; pass a fresh one to start a clean
@@ -254,20 +370,30 @@ def run(repository_id: str, context_text: str, question: str, thread_id: str) ->
     doesn't specify a sessionId, so by default all questions about one repo
     share memory unless the frontend asks for isolation.
     """
-    graph = _get_graph(repository_id)
-    config_arg = {"configurable": {"thread_id": thread_id}, "recursion_limit": MAX_TOOL_ROUNDS * 3 + 4}
-
-    result = graph.invoke(
-        {
-            "messages": [HumanMessage(content=question)],
-            "repository_id": repository_id,
-            "context_text": context_text,
-            "touched_files": [],
-            "blocked": False,
-            "block_reason": None,
-        },
-        config=config_arg,
-    )
+    # MemorySaver checkpointer is safe across *different* thread ids, but
+    # concurrent invokes on the same session can race on checkpoint state.
+    key = (repository_id, thread_id)
+    with _cache_lock:
+        session_lock = _session_locks.get(key)
+        if session_lock is None:
+            session_lock = threading.RLock()
+            _session_locks[key] = session_lock
+    with session_lock:
+        graph = _get_graph(repository_id, revision)
+        config_arg = {"configurable": {"thread_id": thread_id},
+                      "recursion_limit": MAX_TOOL_ROUNDS * 3 + 8}
+        result = graph.invoke(
+            {
+                "messages": [HumanMessage(content=question)],
+                "repository_id": repository_id,
+                "context_text": context_text,
+                "touched_files": [],
+                "blocked": False,
+                "block_reason": None,
+                "tool_rounds": 0,
+            },
+            config=config_arg,
+        )
 
     final_message = result["messages"][-1]
     return {

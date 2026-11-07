@@ -42,7 +42,7 @@ that `ingest/`, `storage/`, and `query/` still own on the Java side.
 | `langchain_tools.py` | The 4 tools (`read_file`, `search_code`, `list_files`, `get_dependencies`) as LangChain `@tool`s |
 | `tools.py` | Actual tool execution logic (unchanged) — `langchain_tools.py` wraps this |
 | `context_retrieval.py` | Open file / mentioned-file lookup, delegates ranking to `graph_rag.py` |
-| `embedding.py` | Real semantic embeddings (sentence-transformers) by default, deterministic hashing fallback |
+| `embedding.py` | Real semantic embeddings by default; hashing only when explicitly configured |
 | `rag.py` | Chunking + indexing into `code_chunks` (pgvector) — now also triggers the Neo4j sync |
 | `evaluation.py` | Ragas/TruLens-style faithfulness + relevance scoring (LLM-as-judge) |
 | `llm_client.py` | Raw rate-limited HTTP client — still used by `guardrails.py`/`evaluation.py`'s judge calls (the main agent chat path now goes through `ChatOpenAI` inside `agent_graph.py` instead) |
@@ -66,9 +66,11 @@ that `ingest/`, `storage/`, and `query/` still own on the Java side.
 - **Evaluation** — `POST /evaluate` for spot-checks; `python -m
   app.evaluation` for a batch/regression suite you maintain yourself.
 - **Real semantic embeddings by default** — was a hashing trick, now
-  `all-MiniLM-L6-v2` (auto-downloads ~90MB on first use; falls back to the
-  old hashing embedding if the download/model load fails, so the service
-  degrades instead of crashing).
+  `all-MiniLM-L6-v2` (downloads ~90MB on first use if not already cached).
+  Batch 2 intentionally does NOT silently switch to hashing if semantic
+  loading fails. Set `LEGACYBRIDGE_EMBEDDING_PROVIDER=hashing` deliberately
+  if necessary, then re-index all repositories. Vector search only returns
+  embeddings carrying the configured model identity in JSONB metadata.
 
 ## Setup
 
@@ -182,3 +184,35 @@ use an environment variable or a gitignored `.env`.
   the semantic-embedding fallback correctly degrades to hashing when the
   model can't be downloaded. Run this against your real Postgres/Neo4j/LLM
   before treating it as production-verified.
+
+
+## Batch 2 upgrade (2026-11-05)
+
+See `BATCH2_INSTALL_AND_ACCEPTANCE.md` before replacing files.
+This update: fixes safe user-label recall false positives, narrows unrelated
+source references, indexes uncovered text-source files, stores embedding model
+identity per vector, validates embedding dimensions, rejects zero-chunk indexing
+for nonempty repositories, improves memory/tool-call trimming and provider errors.
+Existing unlabeled vectors must be re-indexed after deploying Batch 2.
+No Flyway/PostgreSQL migration is needed: the existing `code_chunks.metadata`
+JSONB column stores model identity. Neo4j remains OPTIONAL.
+
+
+## Batch 3 reliability / GraphRAG hardening
+
+Batch 3 preserves Batch 2 vector schemas and embedding identity, fixes duplicate
+tool execution for source attribution via ToolMessage artifacts, adds explicit
+tool-round termination, atomic token-budget reservation, source pagination,
+volatile session concurrency/compaction, and a bounded PostgreSQL dependency
+GraphRAG fallback when Neo4j is not configured. See
+`BATCH3_INSTALL_AND_ACCEPTANCE.md` for limitations, rollback and validation.
+
+No new `code_chunks` migration or re-indexing is necessary for Batch 3.
+The uncommitted `.env` remains the only place for local secrets.
+
+## Batch 4 local hardening
+
+The current implementation uses FastAPI lifespan-managed DB/Neo4j connections,
+model-bound secret filtering and exact-path/repository-scoped source retrieval.
+Read `BATCH4_INSTALL_AND_ACCEPTANCE.md` for the file-access restrictions,
+no-auth local-network warning, validation commands and limitations.

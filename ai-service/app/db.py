@@ -9,32 +9,46 @@ import psycopg2
 import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
 from contextlib import contextmanager
+from threading import RLock
 from pgvector.psycopg2 import register_vector
 
 from . import config
 
 _pool: ThreadedConnectionPool | None = None
+_pool_lock = RLock()
 
 
 def init_pool():
+    """Initialize once even when concurrent FastAPI sync requests arrive."""
     global _pool
-    if _pool is None:
-        _pool = ThreadedConnectionPool(
-            minconn=1,
-            maxconn=10,
-            host=config.DB_HOST,
-            port=config.DB_PORT,
-            dbname=config.DB_NAME,
-            user=config.DB_USER,
-            password=config.DB_PASSWORD,
-        )
+    with _pool_lock:
+        if _pool is None:
+            _pool = ThreadedConnectionPool(
+                minconn=1,
+                maxconn=10,
+                host=config.DB_HOST,
+                port=config.DB_PORT,
+                dbname=config.DB_NAME,
+                user=config.DB_USER,
+                password=config.DB_PASSWORD,
+            )
+
+
+def close_pool():
+    """Release PostgreSQL connections during ASGI lifespan shutdown."""
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            _pool.closeall()
+            _pool = None
 
 
 @contextmanager
 def get_conn():
     if _pool is None:
         init_pool()
-    conn = _pool.getconn()
+    pool = _pool
+    conn = pool.getconn()
     try:
         register_vector(conn)
         yield conn
@@ -43,7 +57,7 @@ def get_conn():
         conn.rollback()
         raise
     finally:
-        _pool.putconn(conn)
+        pool.putconn(conn)
 
 
 @contextmanager

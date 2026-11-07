@@ -12,9 +12,9 @@ Two providers, switchable via LEGACYBRIDGE_EMBEDDING_PROVIDER:
   locally; subsequent calls are fast.
 
 - "hashing": the original deterministic feature-hashing embedding (FNV-1a
-  based "hashing trick") — kept as a zero-dependency, zero-download
-  fallback, and for exact backward compatibility with any code_chunks rows
-  already embedded by the original Java HashingEmbeddingService.
+  based "hashing trick") — available only if explicitly selected.
+  Never silently fall back from semantic to hashing: mixed vector spaces
+  produce confident-looking but incorrect retrieval results.
 
 IMPORTANT: switching providers requires re-indexing every existing
 repository's code_chunks — vectors from different providers are not
@@ -47,21 +47,22 @@ def _get_semantic_model():
     if _semantic_model is not None:
         return _semantic_model
     if _semantic_load_failed:
-        return None
+        raise RuntimeError("Semantic embedding model is unavailable; restart after fixing it")
     try:
         from sentence_transformers import SentenceTransformer
-        _semantic_model = SentenceTransformer("all-MiniLM-L6-v2")
+        model_kwargs = ({"revision": config.EMBEDDING_MODEL_REVISION}
+                        if config.EMBEDDING_MODEL_REVISION else {})
+        _semantic_model = SentenceTransformer("all-MiniLM-L6-v2", **model_kwargs)
         return _semantic_model
     except Exception as e:
-        log.error(
-            "Failed to load semantic embedding model (%s) — falling back to the "
-            "hashing embedding for this process. Set "
-            "LEGACYBRIDGE_EMBEDDING_PROVIDER=hashing to silence this if that's "
-            "intentional, or fix network/disk access to Hugging Face to use "
-            "real semantic embeddings.", e,
-        )
         _semantic_load_failed = True
-        return None
+        log.error("Semantic embedding model unavailable (%s); refusing mixed vector spaces",
+                  type(e).__name__)
+        raise RuntimeError(
+            "Semantic embedding model unavailable; configure the model or explicitly "
+            "set LEGACYBRIDGE_EMBEDDING_PROVIDER=hashing and reindex all repositories"
+        ) from e
+
 
 
 def _tokenize(text: str) -> list[str]:
@@ -113,21 +114,46 @@ def _embed_semantic(text: str) -> list[float] | None:
     return vec.tolist()
 
 
+SEMANTIC_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
+HASHING_MODEL_ID = "legacybridge/fnv1a-hashing-v1"
+
+
+def model_identity() -> str:
+    provider = config.EMBEDDING_PROVIDER.lower().strip()
+    if provider == "semantic":
+        return (SEMANTIC_MODEL_ID + "@" + config.EMBEDDING_MODEL_REVISION
+                if config.EMBEDDING_MODEL_REVISION else SEMANTIC_MODEL_ID + "@unversioned")
+    if provider == "hashing":
+        return HASHING_MODEL_ID
+    raise ValueError(f"Unsupported embedding provider: {provider!r}")
+
+
+def _validate(vec: list[float]) -> list[float]:
+    if len(vec) != dimensions() or any(not math.isfinite(float(x)) for x in vec):
+        raise RuntimeError("Embedding vector has incorrect dimensions or non-finite values")
+    return vec
+
+
 def embed(text: str) -> list[float]:
-    if config.EMBEDDING_PROVIDER == "semantic":
+    provider = config.EMBEDDING_PROVIDER.lower().strip()
+    if provider == "semantic":
         vec = _embed_semantic(text)
-        if vec is not None:
-            return vec
-        # Model failed to load once this process — fall through to hashing
-        # so the service degrades gracefully instead of failing every request.
-    return _embed_hashing(text)
+        if vec is None:
+            raise RuntimeError("Semantic model did not produce an embedding")
+        return _validate(vec)
+    if provider == "hashing":
+        return _validate(_embed_hashing(text))
+    raise ValueError(f"Unsupported embedding provider: {provider!r}")
 
 
 def embed_batch(texts: list[str]) -> list[list[float]]:
-    if config.EMBEDDING_PROVIDER == "semantic":
+    if not texts:
+        return []
+    provider = config.EMBEDDING_PROVIDER.lower().strip()
+    if provider == "semantic":
         model = _get_semantic_model()
-        if model is not None:
-            vecs = model.encode(texts or [], normalize_embeddings=True)
-            return [v.tolist() for v in vecs]
-    return [_embed_hashing(t) for t in texts]
-
+        vecs = model.encode(texts, normalize_embeddings=True)
+        return [_validate(v.tolist() if hasattr(v, "tolist") else list(v)) for v in vecs]
+    if provider == "hashing":
+        return [_validate(_embed_hashing(t)) for t in texts]
+    raise ValueError(f"Unsupported embedding provider: {provider!r}")

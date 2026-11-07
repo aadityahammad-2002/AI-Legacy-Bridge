@@ -51,7 +51,7 @@ def _judge(prompt: str) -> dict:
         parsed = json.loads(content)
         return {"score": float(parsed.get("score", 0.0)), "reason": parsed.get("reason", "")}
     except Exception as e:
-        log.warning("Eval judge returned unparseable output (%s): %r", e, content)
+        log.warning("Eval judge returned unparseable output (%s)", type(e).__name__)
         return {"score": 0.0, "reason": "Judge output could not be parsed"}
 
 

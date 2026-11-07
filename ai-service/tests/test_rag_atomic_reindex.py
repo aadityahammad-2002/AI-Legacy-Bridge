@@ -32,7 +32,7 @@ def setup_index_mocks(monkeypatch, cursor, transaction_events, vectors=None):
         "repository_id": "repo-1", "file_path": "src/A.py", "class_name": "A",
         "function_name": "run", "content": "def run(): return 1", "metadata": {"line": 1},
     }]
-    monkeypatch.setattr(rag, "_fetch_repo_data", lambda _repo_id: ([], [], []))
+    monkeypatch.setattr(rag, "_fetch_repo_data", lambda _repo_id: ([], [], [], []))
     monkeypatch.setattr(rag, "build_chunks", lambda *_args: chunks)
     monkeypatch.setattr(rag.embedding, "embed_batch", lambda _texts: vectors if vectors is not None else [[0.1, 0.2]])
 

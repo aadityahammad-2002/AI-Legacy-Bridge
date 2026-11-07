@@ -55,14 +55,16 @@ def sync_repository(repository_id: str) -> int:
         )
         edges = cur.fetchall()
 
-    driver = get_driver()
-    with driver.session() as session:
-        session.run(
+    def replace_graph(tx):
+        # Delete and reconstruct in ONE managed Neo4j write transaction.
+        # Previously implicit session.run statements could commit deletion
+        # independently and leave a partially rebuilt graph on failure.
+        tx.run(
             "MATCH (f:File {repository_id: $repo_id}) DETACH DELETE f",
             repo_id=repository_id,
-        )
+        ).consume()
         for edge in edges:
-            session.run(
+            tx.run(
                 """
                 MERGE (a:File {repository_id: $repo_id, path: $source})
                 MERGE (b:File {repository_id: $repo_id, path: $target})
@@ -72,7 +74,11 @@ def sync_repository(repository_id: str) -> int:
                 source=edge["source"],
                 target=edge["target"],
                 type=edge["type"],
-            )
+            ).consume()
+
+    driver = get_driver()
+    with driver.session() as session:
+        session.execute_write(replace_graph)
 
     log.info("Synced %d dependency edges to Neo4j for repository %s", len(edges), repository_id)
     return len(edges)
@@ -99,7 +105,8 @@ def get_neighborhood(repository_id: str, node_id: str, hops: int | None = None) 
     ContextRetrievalService's old hardcoded "direct + up to 5 second-level
     nodes" loop, done properly as one variable-length Cypher path query.
     """
-    hops = hops or config.GRAPH_HOP_LIMIT
+    # Clamp before interpolating a hop bound into Cypher (no arbitrary query text).
+    hops = min(6, max(1, int(hops or config.GRAPH_HOP_LIMIT)))
     driver = get_driver()
     with driver.session() as session:
         result = session.run(
@@ -148,3 +155,26 @@ def shortest_path_distance(repository_id: str, from_path: str, to_path: str) -> 
         )
         record = result.single()
         return record["distance"] if record else None
+
+
+def batch_shortest_path_distances(repository_id: str, anchor: str, targets: list[str]) -> dict[str, int]:
+    """One bounded Neo4j query for all candidate distances, not N queries.
+
+    Any missing or disconnected targets are omitted, allowing the caller to
+    supplement missing results via PostgreSQL.
+    """
+    if not anchor or not targets:
+        return {}
+    hop_limit = min(6, max(1, int(config.GRAPH_HOP_LIMIT)))
+    with get_driver().session() as session:
+        rows = session.run(
+            f"""
+            MATCH (start:File {{repository_id: $repo_id, path: $anchor}})
+            UNWIND $targets AS candidate_path
+            MATCH (candidate:File {{repository_id: $repo_id, path: candidate_path}})
+            MATCH p = shortestPath((start)-[:DEPENDS_ON*..{hop_limit}]-(candidate))
+            RETURN candidate.path AS path, length(p) AS distance
+            """,
+            repo_id=repository_id, anchor=anchor, targets=list(dict.fromkeys(targets))[:48],
+        )
+        return {row["path"]: int(row["distance"]) for row in rows if row["distance"] is not None}

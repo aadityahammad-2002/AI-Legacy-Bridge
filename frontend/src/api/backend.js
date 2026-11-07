@@ -87,7 +87,7 @@ export async function ingestAnalysis(repositoryId, analysisResult) {
  *   wording yet — the persona only changes labels/copy on the frontend. Included
  *   here so a future backend change can use it without another frontend change.
  */
-export async function askAi(repositoryId, question, focusedNode, openFilePath, persona) {
+export async function askAi(repositoryId, question, focusedNode, openFilePath, persona, sessionId) {
     const res = await fetch(`${AI_SERVICE_BASE}/api/ai/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -96,12 +96,13 @@ export async function askAi(repositoryId, question, focusedNode, openFilePath, p
             focusedNode: focusedNode || null,
             openFilePath: openFilePath || null,
             persona: persona || null,
+            sessionId: sessionId || null,
         }),
     });
 
     if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `AI request failed (${res.status})`);
+        throw new Error(body.detail || body.error || `AI request failed (${res.status})`);
     }
 
     return res.json();

@@ -27,7 +27,7 @@ log = logging.getLogger("legacybridge.guardrails")
 # Cheap, zero-latency first pass. Not exhaustive — this is a tripwire for
 # the most common patterns, not a substitute for the LLM classifier below.
 _INJECTION_PATTERNS = [
-    re.compile(r"ignore (all|any|previous|prior) instructions", re.I),
+    re.compile(r"ignore (all|any|previous|prior)(?: (?:previous|prior|other))? instructions", re.I),
     re.compile(r"you are now (in )?(dan|developer mode|jailbreak)", re.I),
     re.compile(r"disregard (your|the) (system prompt|rules|guidelines)", re.I),
     re.compile(r"reveal (your|the) (system prompt|instructions)", re.I),
@@ -68,7 +68,9 @@ def _llm_check(question: str) -> GuardrailVerdict:
                 f"categories: {_SAFETY_CATEGORIES}. "
                 "Respond with ONLY a JSON object: {\"safe\": true|false, \"reason\": \"...\" or null}. "
                 "Ordinary technical questions about code, bugs, security review of the user's OWN "
-                "codebase, and migration/refactoring are all SAFE — do not flag normal developer "
+                "codebase, and migration/refactoring are all SAFE. A user asking you to recall "
+                "their OWN test label, demo topic, or earlier messages is SAFE; this is "
+                "NOT a request for hidden/system labels. Do not flag normal developer "
                 "questions just because they mention words like 'security', 'exploit', or 'vulnerability' "
                 "in a legitimate code-review context."
             ),
@@ -81,14 +83,42 @@ def _llm_check(question: str) -> GuardrailVerdict:
         # Models sometimes wrap JSON in a code fence despite instructions.
         content = re.sub(r"^```(json)?|```$", "", content, flags=re.MULTILINE).strip()
         parsed = json.loads(content)
-        return GuardrailVerdict(safe=bool(parsed.get("safe", True)), reason=parsed.get("reason"))
+        safe = parsed.get("safe")
+        if not isinstance(safe, bool):
+            raise ValueError("Guardrail classifier returned an invalid safe field")
+        return GuardrailVerdict(safe=safe, reason=parsed.get("reason"))
     except Exception as e:
         # Fail OPEN on classifier errors (timeout, bad JSON, etc.) — a
         # broken guardrail must not take down AI Explorer entirely. This is
         # a deliberate tradeoff; flip to fail-closed if your threat model
         # prefers availability loss over the small risk window here.
-        log.warning("Guardrail LLM check failed (%s) — failing open for this request", e)
+        log.warning("Guardrail LLM check failed (%s) — failing open for this request", type(e).__name__)
         return GuardrailVerdict(safe=True, reason=None)
+
+
+# An explicit, narrow allow-list for follow-up recall of user-provided context.
+# This is NOT a general bypass for questions containing "remember"/"label":
+# requests mentioning system/developer prompts remain subject to classification.
+_USER_RECALL = re.compile(
+    r"\b(?:what\b.{0,100}\b(?:did i (?:say|mention|give)|was|is)\b|"
+    r"remind me|recall)\b.{0,140}\b(?:label|topic|name|demo|conversation)\b",
+    re.I | re.S,
+)
+_PRIVILEGED_CONTEXT = re.compile(
+    r"\b(?:system|developer|hidden|secret|internal)\s+"
+    r"(?:prompt|instruction|message|policy|key|token|credential)s?\b", re.I,
+)
+
+
+def _ordinary_user_recall(question: str) -> bool:
+    """Only unblock clear own-conversation recall, never privileged context."""
+    has_override = bool(re.search(
+        r"\b(?:ignore|forget|disregard|override|bypass|jailbreak|reveal)\b.{0,100}"
+        r"\b(?:instructions|rules|prompt|guardrails|policy)\b", question, re.I | re.S
+    ))
+    return bool(_USER_RECALL.search(question)
+                and not _PRIVILEGED_CONTEXT.search(question)
+                and not has_override)
 
 
 def check_question_safety(question: str) -> GuardrailVerdict:
@@ -98,5 +128,8 @@ def check_question_safety(question: str) -> GuardrailVerdict:
     heuristic = _heuristic_check(question)
     if heuristic is not None:
         return heuristic
+
+    if _ordinary_user_recall(question):
+        return GuardrailVerdict(safe=True)
 
     return _llm_check(question)

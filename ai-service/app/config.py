@@ -26,6 +26,8 @@ EMBEDDING_DIMENSIONS = int(os.environ.get("LEGACYBRIDGE_EMBEDDING_DIMENSIONS", "
 # "semantic" (default) = real sentence-transformers model, "hashing" = old
 # zero-dependency deterministic fallback. See embedding.py's docstring.
 EMBEDDING_PROVIDER = os.environ.get("LEGACYBRIDGE_EMBEDDING_PROVIDER", "semantic")
+# Optional Hugging Face commit SHA for deterministic semantic model revisions.
+EMBEDDING_MODEL_REVISION = os.environ.get("LEGACYBRIDGE_EMBEDDING_MODEL_REVISION", "").strip()
 
 # --- Graph DB (Neo4j) — powers GraphRAG's structural traversal, see graph_store.py ---
 NEO4J_URI = os.environ.get("LEGACYBRIDGE_NEO4J_URI", "bolt://localhost:7687")

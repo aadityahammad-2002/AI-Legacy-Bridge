@@ -152,9 +152,9 @@ export default function AiExplorer({ repositoryId, analysisResult, focusedContex
         return active ? active.messages : [];
     }, [sessions, activeSessionId]);
 
-        function updateActiveMessages(updater) {
+    function updateActiveMessages(updater, targetSessionId = activeSessionId) {
         setSessions((prev) => prev.map((s) => {
-            if (s.id !== activeSessionId) return s;
+            if (s.id !== targetSessionId) return s;
             const nextMessages = updater(s.messages);
             return {
                 ...s,
@@ -253,19 +253,20 @@ export default function AiExplorer({ repositoryId, analysisResult, focusedContex
     async function handleSend(overrideQuestion) {
         const q = (overrideQuestion ?? question).trim();
         if (!q || asking) return;
+        const sendingSessionId = activeSessionId;
         setQuestion('');
-        updateActiveMessages((m) => [...m, { role: 'user', content: q }]);
+        updateActiveMessages((m) => [...m, { role: 'user', content: q }], sendingSessionId);
         setAsking(true);
         try {
-            const response = await askAi(repositoryId, q, focusedContext?.selectedNode, activeTab, personaId);
+            const response = await askAi(repositoryId, q, focusedContext?.selectedNode, activeTab, personaId, sendingSessionId);
             updateActiveMessages((m) => [...m, {
                 role: 'assistant',
                 content: response.answer,
                 agentUsed: response.agentUsed,
                 sourceFiles: response.sourceFiles,
-            }]);
+            }], sendingSessionId);
         } catch (err) {
-            updateActiveMessages((m) => [...m, { role: 'error', content: err.message }]);
+            updateActiveMessages((m) => [...m, { role: 'error', content: err.message }], sendingSessionId);
         } finally {
             setAsking(false);
         }

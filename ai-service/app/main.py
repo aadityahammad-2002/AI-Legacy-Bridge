@@ -24,33 +24,60 @@ Endpoints:
   GET  /health                - liveness check
 """
 import logging
-from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from uuid import UUID
 
-from . import config, db, embedding, context_retrieval, agent_graph, rag, llm_client, evaluation, code_assist, graph_store
+from . import config, db, embedding, context_retrieval, agent_graph, rag, llm_client, evaluation, code_assist, graph_store, provider_errors, source_safety
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("legacybridge.ai-service")
 
-app = FastAPI(title="AI Legacy Bridge - AI Service")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=config.CORS_ALLOWED_ORIGINS,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.on_event("startup")
-def on_startup():
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Acquire and reliably release shared database/graph connections."""
     db.init_pool()
     log.info(
         "AI service started — model=%s, base_url=%s, embedding_provider=%s, graph_enabled=%s",
         config.LLM_MODEL, config.LLM_BASE_URL, config.EMBEDDING_PROVIDER, bool(config.NEO4J_PASSWORD),
     )
+    try:
+        yield
+    finally:
+        try:
+            graph_store.close_driver()
+        finally:
+            db.close_pool()
+
+
+app = FastAPI(title="AI Legacy Bridge - AI Service", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip() for origin in config.CORS_ALLOWED_ORIGINS if origin.strip()],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
+
+
+# Local safety limit: reverse proxies must independently enforce a body limit
+# for public deployments, including chunked requests without Content-Length.
+MAX_HTTP_BODY_BYTES = 1024 * 1024
+
+
+@app.middleware("http")
+async def reject_oversized_body(request: Request, call_next):
+    raw_size = request.headers.get("content-length")
+    if raw_size:
+        try:
+            if int(raw_size) > MAX_HTTP_BODY_BYTES:
+                return JSONResponse(status_code=413, content={"detail": "Request body too large"})
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length"})
+    return await call_next(request)
 
 
 # --- /api/ai/ask -------------------------------------------------------
@@ -58,15 +85,15 @@ def on_startup():
 class AskRequest(BaseModel):
     """Mirrors ai/dto/AskRequest.java, plus sessionId (new) for multi-turn memory."""
     repositoryId: UUID
-    question: str = Field(min_length=1)
-    focusedNode: str | None = None
-    openFilePath: str | None = None
+    question: str = Field(min_length=1, max_length=4000)
+    focusedNode: str | None = Field(default=None, max_length=1024)
+    openFilePath: str | None = Field(default=None, max_length=1024)
     # Scopes conversation memory (see agent_graph.py's MemorySaver). Two
     # requests with the same sessionId see each other's history. Defaults
     # to the repository id if omitted, so out-of-the-box every question
     # about one repo remembers the ones before it — pass a fresh UUID per
     # browser tab/session if you want isolated conversations instead.
-    sessionId: str | None = None
+    sessionId: str | None = Field(default=None, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
 
 
 class AskResponse(BaseModel):
@@ -79,9 +106,19 @@ class AskResponse(BaseModel):
 @app.post("/api/ai/ask", response_model=AskResponse)
 def ask(request: AskRequest):
     repository_id = str(request.repositoryId)
-    thread_id = request.sessionId or repository_id
+    thread_id = f"{repository_id}:{request.sessionId or 'default'}"
+    if request.openFilePath and not source_safety.is_valid_repo_path(request.openFilePath):
+        raise HTTPException(status_code=422, detail="Invalid relative repository file path")
 
     try:
+        # The Java ingestion transaction increments this revision. LangGraph
+        # in-memory conversations from an older revision must be discarded.
+        with db.get_cursor() as cur:
+            cur.execute("SELECT revision FROM repositories WHERE id = %s", (repository_id,))
+            repo_row = cur.fetchone()
+        if repo_row is None:
+            raise HTTPException(status_code=404, detail="Repository not found")
+        repo_revision = int(repo_row["revision"])
         question_embedding = embedding.embed(request.question)
 
         context = context_retrieval.retrieve(
@@ -89,28 +126,45 @@ def ask(request: AskRequest):
             request.question, question_embedding,
         )
 
-        result = agent_graph.run(repository_id, context.to_prompt_text(), request.question, thread_id)
+        result = agent_graph.run(repository_id, context.to_prompt_text(),
+                                 source_safety.redact_text(request.question),
+                                 thread_id, revision=repo_revision)
 
+    except HTTPException:
+        raise
     except llm_client.LlmError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=e.http_status, detail=str(e))
+    except provider_errors.ProviderFailure as e:
+        raise HTTPException(status_code=e.http_status, detail=str(e))
     except Exception as e:
-        log.exception("ask() failed for repository %s", repository_id)
-        raise HTTPException(status_code=500, detail=f"AI Explorer request failed: {e}")
+        log.error("ask() failed for repository %s (%s)", repository_id, type(e).__name__)
+        raise HTTPException(status_code=500, detail="AI Explorer request failed")
 
     source_files: list[str] = []
-    if context.primary_file:
-        source_files.append(context.primary_file.path)
-    for f in context.matched_files:
-        if f.path not in source_files:
-            source_files.append(f.path)
-    for chunk in context.similar_chunks:
-        if chunk["file_path"] not in source_files:
-            source_files.append(chunk["file_path"])
-    for path in result["touched_files"]:
-        if path not in source_files:
+    known = set(context.all_file_paths)
+
+    def add_source(path):
+        if (isinstance(path, str) and path in known
+                and source_safety.is_valid_repo_path(path)
+                and not source_safety.is_sensitive_path(path)
+                and path not in source_files):
             source_files.append(path)
 
-    return AskResponse(answer=result["answer"], agentUsed="general", sourceFiles=source_files)
+    if context.primary_file:
+        add_source(context.primary_file.path)
+    for f in context.matched_files[:context_retrieval.MAX_MATCHED_FILES]:
+        add_source(f.path)
+    # Not every vector hit supports an answer.  Keep only grounded candidates
+    # and actual read_file/search_code tool artifacts from this response.
+    for chunk in context_retrieval.relevant_source_chunks(
+        context.similar_chunks, request.question
+    ):
+        add_source(chunk["file_path"])
+    for path in result["touched_files"]:
+        add_source(path)
+
+    return AskResponse(answer=source_safety.redact_text(result["answer"]),
+                       agentUsed="general", sourceFiles=source_files)
 
 
 # --- /index/{repository_id} --------------------------------------------
@@ -130,10 +184,16 @@ def index_repository(repository_id: UUID):
     to re-index.
     """
     try:
+        with db.get_cursor() as cur:
+            cur.execute("SELECT id FROM repositories WHERE id = %s", (str(repository_id),))
+            if cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail="Repository not found")
         count = rag.index_repository(str(repository_id))
+    except HTTPException:
+        raise
     except Exception as e:
-        log.exception("indexing failed for repository %s", repository_id)
-        raise HTTPException(status_code=500, detail=f"Indexing failed: {e}")
+        log.error("indexing failed for repository %s (%s)", repository_id, type(e).__name__)
+        raise HTTPException(status_code=500, detail="Repository indexing failed; check service logs")
 
     return IndexResponse(repositoryId=repository_id, chunksIndexed=count)
 
@@ -145,22 +205,25 @@ def delete_repository_index(repository_id: UUID):
     Vector chunks belong to PostgreSQL and are deleted by the Java transaction.
     Do not delete PostgreSQL rows here, as repository IDs may be re-created.
     """
-    if not config.NEO4J_PASSWORD:
-        return None  # vector-only deployments have no external graph mirror
     try:
-        graph_store.delete_repository(str(repository_id))
-    except Exception:
-        log.exception("graph cleanup failed for repository %s", repository_id)
+        if config.NEO4J_PASSWORD:
+            graph_store.delete_repository(str(repository_id))
+    except Exception as e:
+        log.error("graph cleanup failed for repository %s (%s)", repository_id, type(e).__name__)
         raise HTTPException(status_code=503, detail="Graph cleanup temporarily unavailable")
+    finally:
+        # Even if Neo4j is unavailable or not configured, deleted repositories
+        # must not keep their LangGraph conversation checkpoints in memory.
+        agent_graph.evict_repository(str(repository_id))
     return None
 
 
 # --- /evaluate -----------------------------------------------------------
 
 class EvaluateRequest(BaseModel):
-    question: str
-    contextText: str
-    answer: str
+    question: str = Field(max_length=4000)
+    contextText: str = Field(max_length=60000)
+    answer: str = Field(max_length=20000)
 
 
 class EvaluateResponse(BaseModel):
@@ -176,10 +239,12 @@ def evaluate(request: EvaluateRequest):
     AI Explorer answer. For batch/regression evaluation see evaluation.py's
     run_eval_suite(), meant to be run offline, not through this endpoint."""
     try:
-        result = evaluation.evaluate_answer(request.question, request.contextText, request.answer)
+        result = evaluation.evaluate_answer(source_safety.redact_text(request.question),
+                                            source_safety.redact_text(request.contextText),
+                                            source_safety.redact_text(request.answer))
     except Exception as e:
-        log.exception("evaluate() failed")
-        raise HTTPException(status_code=500, detail=f"Evaluation failed: {e}")
+        log.error("evaluate() failed (%s)", type(e).__name__)
+        raise HTTPException(status_code=500, detail="Evaluation failed; check service logs")
 
     return EvaluateResponse(
         faithfulness=result.faithfulness,
@@ -197,9 +262,9 @@ def health():
 # --- /api/code/generate-tests -------------------------------------------
 
 class GenerateTestsRequest(BaseModel):
-    functionName: str = Field(min_length=1)
-    filePath: str = ""
-    code: str | None = None
+    functionName: str = Field(min_length=1, max_length=256)
+    filePath: str = Field(default="", max_length=1024)
+    code: str | None = Field(default=None, max_length=80000)
 
 
 class GenerateTestsResponse(BaseModel):
@@ -217,20 +282,22 @@ def generate_tests(request: GenerateTestsRequest):
     try:
         result = code_assist.generate_tests(request.functionName, request.filePath, request.code or "")
         return GenerateTestsResponse(**result)
-    except llm_client.LlmError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=502, detail=f"Model returned an unparseable response: {e}")
+    except HTTPException:
+        raise
+    except (llm_client.LlmError, provider_errors.ProviderFailure) as e:
+        raise HTTPException(status_code=e.http_status, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Model returned an invalid structured response")
     except Exception as e:
-        log.exception("generate_tests() failed for %s", request.functionName)
-        raise HTTPException(status_code=500, detail=f"Test generation failed: {e}")
+        log.error("generate_tests() failed (%s)", type(e).__name__)
+        raise HTTPException(status_code=500, detail="Test generation failed; check service logs")
 
 
 # --- /api/code/suggest-migration -----------------------------------------
 
 class SuggestMigrationRequest(BaseModel):
-    filePath: str = Field(min_length=1)
-    code: str | None = None
+    filePath: str = Field(min_length=1, max_length=1024)
+    code: str | None = Field(default=None, max_length=80000)
 
 
 class MigrationHunk(BaseModel):
@@ -252,15 +319,19 @@ def suggest_migration(request: SuggestMigrationRequest):
     try:
         result = code_assist.suggest_migration(request.filePath, request.code or "")
         return SuggestMigrationResponse(**result)
-    except llm_client.LlmError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=502, detail=f"Model returned an unparseable response: {e}")
+    except HTTPException:
+        raise
+    except (llm_client.LlmError, provider_errors.ProviderFailure) as e:
+        raise HTTPException(status_code=e.http_status, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Model returned an invalid structured response")
     except Exception as e:
-        log.exception("suggest_migration() failed for %s", request.filePath)
-        raise HTTPException(status_code=500, detail=f"Migration suggestion failed: {e}")
+        log.error("suggest_migration() failed (%s)", type(e).__name__)
+        raise HTTPException(status_code=500, detail="Migration suggestion failed; check service logs")
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=config.PORT, reload=False)
+    # Bind locally by default; public deployment requires network isolation
+    # and dedicated ingress controls (auth remains out of project scope).
+    uvicorn.run("app.main:app", host="127.0.0.1", port=config.PORT, reload=False)
