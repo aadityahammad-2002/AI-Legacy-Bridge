@@ -69,6 +69,78 @@ AI-Legacy-Bridge/
 
 ## Getting Started
 
+### Docker Setup (Recommended)
+
+Run the full application with **Docker Compose**: React/Nginx, Java 21 Spring Boot, Python FastAPI/AI Service, and PostgreSQL 18 with pgvector. **Neo4j GraphRAG is optional.** You only need Docker Desktop with Docker Compose; Java, Python, Node.js, and PostgreSQL do not need to be installed separately on your computer.
+
+#### 1. Clone and configure
+
+```bash
+git clone https://github.com/aadityahammad-2002/AI-Legacy-Bridge.git
+cd AI-Legacy-Bridge
+```
+
+Copy the root `.env.example` to **root `.env`**:
+
+```powershell
+# Windows PowerShell
+Copy-Item .env.example .env
+notepad .env
+```
+
+On Linux/macOS use `cp .env.example .env`. Set a strong `POSTGRES_PASSWORD` and your own `LEGACYBRIDGE_LLM_API_KEY` (Gemini by default). The root `.env` is gitignored and **must not** be committed. Docker passes the configuration to the AI service automatically; `ai-service/.env` is only needed for manual runs.
+
+#### 2. Start the complete stack
+
+```bash
+docker compose config --quiet
+docker compose up --build -d
+docker compose ps
+```
+
+Open **http://localhost:5173**. Other local endpoints:
+
+| Service | Address |
+|---|---|
+| Frontend | http://localhost:5173 |
+| Spring Boot API | http://localhost:8080 |
+| FastAPI / Swagger | http://localhost:8001/docs |
+| AI service health | http://localhost:8001/health |
+
+The first build downloads container images and dependencies; the semantic embedding model may download on first use. Before running Docker, stop any local frontend, Java, or Python processes occupying ports **5173, 8080, or 8001**.
+
+#### 3. Optional Neo4j GraphRAG
+
+By default, Neo4j is disabled and the AI service uses PostgreSQL/pgvector with its PostgreSQL dependency-graph fallback. To enable Neo4j, set a strong `NEO4J_PASSWORD` in **root `.env`**, then run:
+
+```bash
+docker compose --profile graph up --build -d
+```
+
+Neo4j Browser: **http://localhost:7474** (username: `neo4j`; password: the value in root `.env`). Graph data for previously ingested repositories may require re-indexing.
+
+#### 4. Check, restart, or stop
+
+```bash
+# View logs and container status
+docker compose logs --tail=100
+docker compose ps
+
+# Stop containers without deleting stored data
+docker compose down
+
+# Rebuild after application code changes
+docker compose up --build -d
+```
+
+For the Neo4j configuration, use `docker compose --profile graph down` to stop the graph container too. The Docker database uses a persistent named volume, **independent of any PostgreSQL installed on your computer**. Existing Windows databases are not imported automatically. Avoid `docker compose down -v` unless you intentionally want to delete Docker-managed data.
+
+> This is a **local development** setup, not a public production deployment: the application has no authentication. Container build and end-to-end Docker runtime still need to be validated on a machine with Docker Desktop.
+
+More details and troubleshooting: [Docker Setup Guide](DOCKER_SETUP.md).
+
+---
+
 ### Prerequisites
 - Node.js 18+
 - Java 21 + Maven

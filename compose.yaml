@@ -1,0 +1,130 @@
+name: ai-legacy-bridge
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg18-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: legacybridge
+      POSTGRES_USER: legacybridge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./docker/postgres-init/01-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U legacybridge -d legacybridge"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    networks:
+      - legacybridge
+
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      LEGACYBRIDGE_DB_HOST: postgres
+      LEGACYBRIDGE_DB_PORT: "5432"
+      LEGACYBRIDGE_DB_NAME: legacybridge
+      LEGACYBRIDGE_DB_USER: legacybridge
+      LEGACYBRIDGE_DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
+      LEGACYBRIDGE_LLM_API_KEY: ${LEGACYBRIDGE_LLM_API_KEY:?Set LEGACYBRIDGE_LLM_API_KEY in the root .env file}
+      LEGACYBRIDGE_LLM_BASE_URL: ${LEGACYBRIDGE_LLM_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}
+      LEGACYBRIDGE_LLM_MODEL: ${LEGACYBRIDGE_LLM_MODEL:-gemini-3.5-flash-lite}
+      LEGACYBRIDGE_EMBEDDING_PROVIDER: semantic
+      LEGACYBRIDGE_GUARDRAILS_ENABLED: "true"
+      LEGACYBRIDGE_NEO4J_URI: bolt://neo4j:7687
+      LEGACYBRIDGE_NEO4J_USER: neo4j
+      LEGACYBRIDGE_NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
+      LEGACYBRIDGE_CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      HF_HOME: /root/.cache/huggingface
+      HF_HUB_OFFLINE: "0"
+      TOKENIZERS_PARALLELISM: "false"
+      OMP_NUM_THREADS: "2"
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    ports:
+      - "127.0.0.1:8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - legacybridge
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/legacybridge
+      SPRING_DATASOURCE_USERNAME: legacybridge
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
+      JAVA_TOOL_OPTIONS: -Xms128m -Xmx768m
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+    networks:
+      - legacybridge
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:8080
+        VITE_AI_SERVICE_BASE_URL: http://localhost:8001
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      - backend
+    networks:
+      - legacybridge
+
+  neo4j:
+    image: neo4j:5
+    profiles:
+      - graph
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 256m
+      NEO4J_server_memory_pagecache_size: 256m
+    volumes:
+      - neo4j_data:/data
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    healthcheck:
+      test: ["CMD-SHELL", 'cypher-shell -u neo4j -p "$$NEO4J_PASSWORD" "RETURN 1" >/dev/null 2>&1']
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    networks:
+      - legacybridge
+
+volumes:
+  postgres_data:
+  huggingface_cache:
+  neo4j_data:
+
+networks:
+  legacybridge:
+    driver: bridge

@@ -1,0 +1,12 @@
+.git/
+.idea/
+.vscode/
+target/
+build/
+*.log
+.env
+.env.*
+config/local-db.properties
+src/main/resources/application.properties
+src/main/resources/application-*.properties
+models/
