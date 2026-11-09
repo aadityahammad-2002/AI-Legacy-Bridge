@@ -17,18 +17,10 @@ import {
 } from './session/session.js';
 
 /**
- * Top-level router. Deliberately simple state-machine (no react-router) —
- * the app only ever has 4 real screens and the transitions between them are
- * exactly the ones in PROJECT_DOCUMENTATION.md section 2:
- *
- *   upload -> workspace-select -> (visualization <-> ai-explorer) -> [exit] -> upload
- *
- * Refresh handling (section 9): on mount, check session.js for an active
- * repositoryId + its saved workspace. If found, load the IndexedDB snapshot
- * and jump straight to that workspace — never force a redirect back to
- * Visualization Explorer, and never re-run analysis or re-fetch the repo.
+ * Existing product state machine, with an optional fresh upload entry from
+ * the marketing landing page. /app reloads still recover saved workspaces.
  */
-export default function App() {
+export default function App({ startOnUpload = false }) {
     const [view, setView] = useState('loading'); // loading | upload | workspace-select | workspace
     const [repositoryId, setRepositoryId] = useState(null);
     const [repoMeta, setRepoMeta] = useState(null);
@@ -38,18 +30,24 @@ export default function App() {
     const [ingestWarning, setIngestWarning] = useState(null);
     const [showSettings, setShowSettings] = useState(false);
 
-    // --- Refresh survival: restore session on mount ---
+    // Preserve the original session-restore behavior for direct /app visits.
+    // A CTA click starts at the upload UI without clearing saved data.
     useEffect(() => {
+        if (startOnUpload) {
+            setView('upload');
+            return;
+        }
+        let cancelled = false;
         (async () => {
             const savedRepositoryId = getActiveRepositoryId();
             if (!savedRepositoryId) {
-                setView('upload');
+                if (!cancelled) setView('upload');
                 return;
             }
             try {
                 const snapshot = await loadAnalysisSnapshot(savedRepositoryId);
+                if (cancelled) return;
                 if (!snapshot) {
-                    // Pointer existed but the snapshot didn't (e.g. cleared some other way) — start fresh.
                     setView('upload');
                     return;
                 }
@@ -59,11 +57,13 @@ export default function App() {
                 setActiveWorkspaceState(getCurrentWorkspace());
                 setView('workspace');
             } catch (err) {
+                if (cancelled) return;
                 console.error('[App] failed to restore session:', err);
                 setView('upload');
             }
         })();
-    }, []);
+        return () => { cancelled = true; };
+    }, [startOnUpload]);
 
     const handleAnalysisComplete = useCallback(({ repositoryId: newId, repoMeta: newMeta, analysisResult: newResult, ingestError }) => {
         setRepositoryId(newId);
@@ -80,9 +80,6 @@ export default function App() {
     }, []);
 
     const handleNavigate = useCallback((workspace) => {
-        // 'settings' is an overlay over whichever workspace was active —
-        // it doesn't touch the persisted currentWorkspace pointer, so a
-        // refresh while on Settings still lands back on the right workspace.
         if (workspace === 'settings') {
             setShowSettings(true);
             return;
@@ -114,7 +111,7 @@ export default function App() {
         setView('upload');
     }, []);
 
-    if (view === 'loading') return null; // brief — restoring session from IndexedDB
+    if (view === 'loading') return null;
 
     if (view === 'upload') {
         return <UploadPage onAnalysisComplete={handleAnalysisComplete} />;
@@ -141,7 +138,6 @@ export default function App() {
         );
     }
 
-    // view === 'workspace'
     if (showSettings) {
         return (
             <SettingsPage
