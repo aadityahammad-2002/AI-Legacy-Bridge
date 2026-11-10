@@ -190,8 +190,6 @@ npm run dev
 ## Known Limitations
 
 - No authentication yet — intended for local/dev use
-- AI Explorer doesn't yet pass a per-tab `sessionId` from the UI, so multi-turn memory currently defaults to being shared per repository
-- `ai-service`'s guardrail and evaluation layers are prompt-based (LLM-as-judge), not the actual LlamaGuard/Ragas packages
 
 ## Author
 
