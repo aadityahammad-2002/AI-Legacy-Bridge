@@ -191,6 +191,11 @@ npm run dev
 
 - No authentication yet — intended for local/dev use
 
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+ 
+
 ## Author
 
 Built by [Aaditya](https://github.com/aadityahammad-2002)
