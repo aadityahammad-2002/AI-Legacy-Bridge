@@ -8,17 +8,7 @@ Upload a legacy codebase, get an interactive dependency graph, and ask an AI age
   then update the paths below to match your filenames.
 -->
 
-## Screenshots
 
-| Upload & Analyze | WorkSpace Selection |
-|---|---|
-| ![Upload Page](SS/Upload.png) | ![WorkSpace Selection](SS/WorkSpace.png) |
-| Visulization Explorer | Ai Explorer |
-| ![Visulization Explorer](SS/VE1.png) | ![Ai Explorer](SS/AIEN.png) |
-
-| Test you code | Migration Suggestions |
-|---|---|
-| ![AI Explorer](SS/Test1.png) | ![Migrate Page](SS/Migrate.png) |
 
 ## Overview
 
