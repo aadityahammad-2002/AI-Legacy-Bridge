@@ -44,7 +44,7 @@ const CATEGORY_META = {
  * non-destructive Accept/Reject-as-tracking philosophy the previous
  * version used, just reframed as a checklist instead of an editor.
  */
-export default function MigratePage({ analysisResult, activeWorkspace, repositoryId, onNavigate, onExitRepository }) {
+export default function MigratePage({ embedded = false, analysisResult, activeWorkspace, repositoryId, onNavigate, onExitRepository }) {
     const files = analysisResult?.files || [];
     const migrationRisk = analysisResult?.migrationRisk || {};
     const migrationOrder = analysisResult?.migrationOrder || { order: [], totalBatches: 0 };
@@ -184,7 +184,7 @@ export default function MigratePage({ analysisResult, activeWorkspace, repositor
 
     return (
         <div className="migrate-page">
-            <TopNavBar activeWorkspace={activeWorkspace} onNavigate={onNavigate} onExitRepository={onExitRepository} />
+            {!embedded && <TopNavBar activeWorkspace={activeWorkspace} onNavigate={onNavigate} onExitRepository={onExitRepository} />}
 
             <div className="migrate-layout">
                 <ResizablePanel side="left" storageKey="migrate-file-panel" defaultWidth={280} minWidth={200} maxWidth={480}>

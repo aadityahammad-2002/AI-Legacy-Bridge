@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { GitBranch, Boxes, MessageSquareCode, LogOut, Settings, User, FlaskConical, GitCompare } from 'lucide-react';
+import { GitBranch, Boxes, MessageSquareCode, LogOut, Settings, User, FlaskConical, GitCompare, LayoutDashboard } from 'lucide-react';
 import { getProfile } from '../session/settings.js';
 import './TopNavBar.css';
 
@@ -31,6 +31,7 @@ export default function TopNavBar({ activeWorkspace, onNavigate, onExitRepositor
             </div>
 
             <div className="top-nav__tabs">
+                <button className="top-nav__tab" onClick={() => onNavigate('dashboard')}><LayoutDashboard size={14} strokeWidth={1.8}/> Dashboard</button>
                 <button
                     className={`top-nav__tab${activeWorkspace === 'visualization' ? ' top-nav__tab--active' : ''}`}
                     onClick={() => onNavigate('visualization')}

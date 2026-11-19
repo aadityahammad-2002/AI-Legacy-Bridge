@@ -1,0 +1,500 @@
+import { X, Send, Loader2, Sparkles, Target, Search, Plus, History } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { useState, useMemo, useRef, useEffect } from 'react';
+import Editor from '@monaco-editor/react';
+
+import FolderTree from '../components/FolderTree.jsx';
+import GraphCanvas from '../components/GraphCanvas.jsx';
+import AltVisualizations from '../components/AltVisualizations.jsx';
+import { normalizeGraphView } from '../components/graphViews.js';
+import ResizablePanel from '../components/ResizablePanel.jsx';
+import { askAi } from '../api/backend.js';
+import { getPersona } from './aiExplorerPersonas.js';
+import './AiExplorer.css';
+import './ExplorerV2.css';
+import { EyeSource } from '../workspace/SourceViewer.jsx';
+
+const EXTENSION_TO_MONACO_LANGUAGE = {
+    java: 'java', js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
+    py: 'python', go: 'go', rb: 'ruby', php: 'php', rs: 'rust', c: 'c', cpp: 'cpp',
+    cs: 'csharp', kt: 'kotlin', swift: 'swift', scala: 'scala', json: 'json',
+    md: 'markdown', yml: 'yaml', yaml: 'yaml', html: 'html', css: 'css', sql: 'sql',
+};
+
+function languageForPath(path) {
+    const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+    return EXTENSION_TO_MONACO_LANGUAGE[ext] || 'plaintext';
+}
+
+// --- Chat session persistence (localStorage, scoped per repository) ---
+
+function sessionsStorageKey(repositoryId) {
+    return `ai-explorer-sessions:${repositoryId}`;
+}
+
+function activeSessionStorageKey(repositoryId) {
+    return `ai-explorer-active-session:${repositoryId}`;
+}
+
+function loadSessions(repositoryId) {
+    if (!repositoryId) return [];
+    try {
+        const raw = localStorage.getItem(sessionsStorageKey(repositoryId));
+        return raw ? JSON.parse(raw) : [];
+    } catch {
+        return [];
+    }
+}
+
+function saveSessions(repositoryId, sessions) {
+    if (!repositoryId) return;
+    try {
+        localStorage.setItem(sessionsStorageKey(repositoryId), JSON.stringify(sessions));
+    } catch {
+        // storage full/unavailable — non-fatal
+    }
+}
+
+function loadActiveSessionId(repositoryId) {
+    if (!repositoryId) return null;
+    try {
+        return localStorage.getItem(activeSessionStorageKey(repositoryId));
+    } catch {
+        return null;
+    }
+}
+
+function saveActiveSessionId(repositoryId, sessionId) {
+    if (!repositoryId || !sessionId) return;
+    try {
+        localStorage.setItem(activeSessionStorageKey(repositoryId), sessionId);
+    } catch {
+        // non-fatal
+    }
+}
+
+function newSessionId() {
+    return `s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function makeSessionTitle(messages) {
+    const firstUser = messages.find((m) => m.role === 'user');
+    if (!firstUser) return 'New chat';
+    const text = firstUser.content.trim();
+    return text.length > 40 ? text.slice(0, 40) + '…' : text;
+}
+
+// --- Markdown helper ---
+
+function normalizeMarkdown(text) {
+    if (!text) return text;
+    // Ensure a blank line precedes any line that starts a bullet/numbered
+    // list — otherwise it gets swallowed into the preceding paragraph and
+    // renders as literal "* " / "1. " text instead of an actual list.
+    const lines = text.split('\n');
+    const result = [];
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const isListLine = /^\s*([-*+]|\d+\.)\s/.test(line);
+        const prevLine = result[result.length - 1];
+        if (isListLine && prevLine !== undefined && prevLine.trim() !== '' && !/^\s*([-*+]|\d+\.)\s/.test(prevLine)) {
+            result.push('');
+        }
+        result.push(line);
+    }
+    return result.join('\n');
+}
+
+/**
+ * Page 4 — AI Explorer. IDE-style layout per PROJECT_DOCUMENTATION.md
+ * section 8: folder tree | Monaco code editor with tabs | AI chat.
+ *
+ * The editor reads `analysisResult.fileContents` (full file source, kept in
+ * the browser-local IndexedDB snapshot only; see UploadPage.jsx and
+ * DEVELOPMENT_PROGRESS.md Entry 6 for why the backend never receives this).
+ * The chat panel is wired to the real backend (`POST /api/ai/ask` — see
+ * ContextRetrievalService/AgentOrchestrator/GroqClient).
+ *
+ * Chat history is multi-session (like a typical AI chat product): each
+ * repository has its own list of sessions in localStorage, one of which is
+ * "active" at a time. New Chat starts a fresh session; the history panel
+ * lets you jump back to any previous one.
+ */
+export default function AiExplorerV2({ repositoryId, analysisResult, focusedContext, onNavigate, onContextSelect }) {
+    const [openTabs, setOpenTabs] = useState(() => (focusedContext ? [focusedContext.selectedNode] : []));
+    const [activeTab, setActiveTab] = useState(() => focusedContext?.selectedNode || null);
+
+    const [sessions, setSessions] = useState(() => loadSessions(repositoryId));
+    const [activeSessionId, setActiveSessionId] = useState(() => {
+        const saved = loadActiveSessionId(repositoryId);
+        const loaded = loadSessions(repositoryId);
+        if (saved && loaded.some((s) => s.id === saved)) return saved;
+        return loaded.length > 0 ? loaded[0].id : null;
+    });
+    const [historyOpen, setHistoryOpen] = useState(false);
+
+    // The supported Visualization Explorer view also drives this mini-map.
+    // Legacy stored values are normalized instead of rendering a removed mode.
+    const [minimapVizType] = useState(() => normalizeGraphView(localStorage.getItem('viz-explorer:vizType')));
+
+    // Single unified AI assistant. Original persona-specific UI remains in preserved AiExplorer.jsx.
+    const personaId = 'normal';
+    const persona = getPersona('normal');
+    const [showMiniMap, setShowMiniMap] = useState(true);
+    const [focusMode, setFocusMode] = useState(false);
+    useEffect(() => {
+        if (!focusMode) return undefined;
+        const handleEscape = e => { if (e.key === 'Escape') setFocusMode(false); };
+        window.addEventListener('keydown', handleEscape);
+        return () => window.removeEventListener('keydown', handleEscape);
+    }, [focusMode]);
+
+    const messages = useMemo(() => {
+        const active = sessions.find((s) => s.id === activeSessionId);
+        return active ? active.messages : [];
+    }, [sessions, activeSessionId]);
+
+    function updateActiveMessages(updater, targetSessionId = activeSessionId) {
+        setSessions((prev) => prev.map((s) => {
+            if (s.id !== targetSessionId) return s;
+            const nextMessages = updater(s.messages);
+            return {
+                ...s,
+                messages: nextMessages,
+                title: s.title === 'New chat' ? makeSessionTitle(nextMessages) : s.title,
+                updatedAt: Date.now(),
+            };
+        }));
+    }
+
+    function startNewChat() {
+        const sessionId = newSessionId();
+        setSessions((prev) => [{ id: sessionId, title: 'New chat', messages: [], updatedAt: Date.now() }, ...prev]);
+        setActiveSessionId(sessionId);
+        setHistoryOpen(false);
+    }
+
+    function switchToSession(sessionId) {
+        setActiveSessionId(sessionId);
+        setHistoryOpen(false);
+    }
+
+    const [question, setQuestion] = useState('');
+    const [asking, setAsking] = useState(false);
+    const [treeSearch, setTreeSearch] = useState('');
+    const chatEndRef = useRef(null);
+
+    const filteredFiles = useMemo(() => {
+        if (!treeSearch.trim()) return analysisResult.files;
+        const q = treeSearch.trim().toLowerCase();
+        return analysisResult.files.filter((f) => f.path.toLowerCase().includes(q));
+    }, [analysisResult.files, treeSearch]);
+
+    useEffect(() => {
+        chatEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
+    }, [messages, asking]);
+
+    useEffect(() => {
+        if (!repositoryId) return;
+        saveSessions(repositoryId, sessions);
+    }, [sessions, repositoryId]);
+
+    useEffect(() => {
+        if (!repositoryId || !activeSessionId) return;
+        saveActiveSessionId(repositoryId, activeSessionId);
+    }, [activeSessionId, repositoryId]);
+
+        useEffect(() => {
+        let loaded = loadSessions(repositoryId);
+        const saved = loadActiveSessionId(repositoryId);
+        let activeId = saved && loaded.some((s) => s.id === saved) ? saved : (loaded.length > 0 ? loaded[0].id : null);
+
+        // Guarantee there's always exactly one session to write into —
+        // this removes the race where sending a message before a session
+        // exists could create duplicate/fragmented sessions.
+        if (!activeId) {
+            const id = newSessionId();
+            loaded = [{ id, title: 'New chat', messages: [], updatedAt: Date.now() }, ...loaded];
+            activeId = id;
+        }
+
+        setSessions(loaded);
+        setActiveSessionId(activeId);
+    }, [repositoryId]);
+
+    const fileContents = useMemo(() => {
+        // Local snapshots include fileContents; reconstructed backend snapshots
+        // may only include source in analysis.files[].content.
+        const fromFiles = Object.fromEntries((analysisResult.files || [])
+            .filter((file) => typeof file.content === 'string')
+            .map((file) => [file.path, file.content]));
+        return { ...fromFiles, ...(analysisResult.fileContents || {}) };
+    }, [analysisResult.files, analysisResult.fileContents]);
+    const hasFileContents = Object.keys(fileContents).length > 0;
+    const availablePaths = useMemo(() => new Set((analysisResult.files || []).map(f => f.path)), [analysisResult.files]);
+    useEffect(() => {
+        const path = focusedContext?.selectedNode;
+        if (!path || !availablePaths.has(path)) return;
+        setOpenTabs(tabs => tabs.includes(path) ? tabs : [...tabs, path]);
+        setActiveTab(path);
+    }, [focusedContext?.selectedNode, availablePaths]);
+
+
+    function openFile(path) {
+        if (path && !availablePaths.has(path)) return;
+        if (!path) return; // GraphCanvas's background-click deselect passes null here — without this guard, null gets pushed into openTabs and crashes at path.split('/') in the tab bar below
+        setOpenTabs((tabs) => (tabs.includes(path) ? tabs : [...tabs, path]));
+        setActiveTab(path);
+        onContextSelect?.({file:path});
+    }
+
+    function closeTab(path, e) {
+        e.stopPropagation();
+        setOpenTabs((tabs) => {
+            const next = tabs.filter((t) => t !== path);
+            if (activeTab === path) setActiveTab(next.length > 0 ? next[next.length - 1] : null);
+            return next;
+        });
+    }
+
+    const activeContent = useMemo(
+        () => (activeTab ? fileContents[activeTab] ?? 'Source content not available for this file.' : ''),
+        [activeTab, fileContents]
+    );
+
+    async function handleSend(overrideQuestion) {
+        const q = (overrideQuestion ?? question).trim();
+        if (!q || asking) return;
+        const sendingSessionId = activeSessionId;
+        setQuestion('');
+        updateActiveMessages((m) => [...m, { role: 'user', content: q }], sendingSessionId);
+        setAsking(true);
+        try {
+            const response = await askAi(repositoryId, q, focusedContext?.selectedNode, activeTab, personaId, sendingSessionId);
+            updateActiveMessages((m) => [...m, {
+                role: 'assistant',
+                content: response.answer,
+                agentUsed: response.agentUsed,
+                sourceFiles: response.sourceFiles,
+            }], sendingSessionId);
+        } catch (err) {
+            updateActiveMessages((m) => [...m, { role: 'error', content: err.message }], sendingSessionId);
+        } finally {
+            setAsking(false);
+        }
+    }
+
+    // Real suggested prompts — clicking one sends an actual question through
+    // the same askAi() flow above, just pre-filled based on what's focused/open.
+    // Wording comes from the active persona (see aiExplorerPersonas.js); the
+    // question sent to the backend is identical regardless of persona.
+    const suggestedPrompts = useMemo(() => {
+        const target = focusedContext?.selectedNode || activeTab;
+        const name = target ? target.split('/').pop().replace(/\.[^.]+$/, '') : null;
+        if (!name) return persona.starterPrompts;
+        return persona.contextPrompts(name);
+    }, [focusedContext, activeTab, persona]);
+
+    return (
+        <div className={`ai-explorer ai-explorer--v2 ${focusMode ? 'lb-v2-focus' : ''}`}>
+            <div className="lb-v2-hero">
+                <div><div className="lb-v2-eyebrow">SOURCE WORKSPACE · AI ASSISTANT V2</div><h1>AI Explorer</h1><p>Explore source, inspect the repository graph and ask grounded questions.</p></div>
+                <div className="lb-v2-hero-actions">
+                    <button type="button" onClick={() => setShowMiniMap(v => !v)}>{showMiniMap ? 'Hide mini-map' : 'Show mini-map'}</button>
+                    <button type="button" onClick={() => setFocusMode(v => !v)}>{focusMode ? 'Exit Focus' : 'Focus mode'}</button>
+                    <button type="button" onClick={() => onNavigate('ai-explorer', activeTab ? {file:activeTab} : null)}>Legacy view</button>
+                </div>
+            </div>
+            <div className="ai-explorer__body">
+                <ResizablePanel side="left" storageKey="ai-explorer-v2-tree" defaultWidth={260} minWidth={180} maxWidth={480}>
+                    <div className="ai-explorer__tree-panel">
+                        <h3 className="ai-explorer__panel-title">{persona.treeLabel}</h3>
+                        <div className="ai-explorer__search">
+                            <Search size={12} strokeWidth={2} />
+                            <input
+                                type="text"
+                                value={treeSearch}
+                                onChange={(e) => setTreeSearch(e.target.value)}
+                                placeholder="Search files…"
+                            />
+                        </div>
+                        <FolderTree files={filteredFiles} selectedPath={activeTab} onSelectFile={openFile} expandAll={Boolean(treeSearch.trim())} />
+                    </div>
+
+                    {showMiniMap && analysisResult.graph && (
+                        <div className="ai-explorer__minimap-panel">
+                            <h3 className="ai-explorer__panel-title">
+                                Mini Map {focusedContext ? '(Focused)' : '(Full Graph)'}
+                            </h3>
+                            <div className="ai-explorer__minimap-canvas">
+                                {minimapVizType === 'graph' ? (
+                                    <GraphCanvas
+                                        nodes={analysisResult.graph.nodes}
+                                        edges={analysisResult.graph.edges}
+                                        selectedNodeId={focusedContext?.selectedNode || activeTab}
+                                        onSelectNode={openFile}
+                                        showLabels={false}
+                                    />
+                                ) : (
+                                    <AltVisualizations
+                                        vizType={minimapVizType}
+                                        files={analysisResult.files}
+                                        nodes={analysisResult.graph.nodes}
+                                        edges={analysisResult.graph.edges}
+                                        issues={analysisResult.issues}
+                                        selectedNodeId={focusedContext?.selectedNode || activeTab}
+                                        onSelectNode={openFile}
+                                    />
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                </ResizablePanel>
+
+                <main className="ai-explorer__editor">
+                    <div className="lb-v2-editor-header"><span>READ-ONLY SOURCE EDITOR</span><span className="lb-v2-editor-current" title={activeTab||''}>{activeTab||'Choose a file'}</span>{activeTab&&<EyeSource file={activeTab} compact/>}</div>
+                    {openTabs.length > 0 && (
+                        <div className="ai-explorer__tabs">
+                            {openTabs.map((path) => (
+                                <div
+                                    key={path}
+                                    className={`ai-explorer__tab${path === activeTab ? ' ai-explorer__tab--active' : ''}`}
+                                    onClick={() => setActiveTab(path)}
+                                >
+                                    <span>{path.split('/').pop()}</span>
+                                    <X size={12} strokeWidth={2} onClick={(e) => closeTab(path, e)} />
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    <div className="ai-explorer__editor-body">
+                        {!activeTab ? (
+                            !hasFileContents ? (
+                                <div className="ai-explorer__empty">
+                                    No file content available — this repository was analyzed before file content
+                                    persistence was added; re-analyze to browse source here.
+                                </div>
+                            ) : (
+                                <div className="ai-explorer__empty">Select a file from the tree to open it.</div>
+                            )
+                        ) : (
+                            <Editor
+                                height="100%"
+                                theme="vs-dark"
+                                language={languageForPath(activeTab)}
+                                value={activeContent}
+                                options={{ readOnly: true, minimap: { enabled: false }, fontSize: 13, automaticLayout: true }}
+                            />
+                        )}
+                    </div>
+                </main>
+
+                <ResizablePanel side="right" storageKey="ai-explorer-v2-chat" defaultWidth={300} minWidth={220} maxWidth={460}>
+                    <div className="ai-explorer__chat">
+                        <div className="ai-explorer__chat-header">
+                            <h3 className="ai-explorer__panel-title">
+                                {focusedContext ? `${persona.assistantLabel} (Focused)` : persona.assistantLabel}
+                            </h3>
+                            <div className="ai-explorer__chat-header-actions">
+                                <button className="ai-explorer__icon-btn" onClick={startNewChat} title="New chat">
+                                    <Plus size={13} strokeWidth={2} />
+                                </button>
+                                <button
+                                    className="ai-explorer__icon-btn"
+                                    onClick={() => setHistoryOpen((o) => !o)}
+                                    title="Chat history"
+                                >
+                                    <History size={13} strokeWidth={2} />
+                                </button>
+                            </div>
+                        </div>
+
+                        {historyOpen && (
+                            <div className="ai-explorer__history-panel">
+                                {sessions.length === 0 && (
+                                    <p className="ai-explorer__history-empty">No past chats yet.</p>
+                                )}
+                                {sessions
+                                    .slice()
+                                    .sort((a, b) => b.updatedAt - a.updatedAt)
+                                    .map((s) => (
+                                        <button
+                                            key={s.id}
+                                            className={`ai-explorer__history-item${s.id === activeSessionId ? ' ai-explorer__history-item--active' : ''}`}
+                                            onClick={() => switchToSession(s.id)}
+                                        >
+                                            {s.title || 'New chat'}
+                                        </button>
+                                    ))}
+                            </div>
+                        )}
+
+                        {focusedContext && (
+                            <div className="ai-explorer__focused">
+                                <Target size={12} strokeWidth={2} />
+                                <span className="ai-explorer__focused-node">{persona.focusedLabel(focusedContext.selectedNode.split('/').pop())}</span>
+                            </div>
+                        )}
+
+                        <div className="ai-explorer__suggested">
+                            <span className="ai-explorer__suggested-label">{persona.suggestedLabel}</span>
+                            {suggestedPrompts.map((p) => (
+                                <button key={p} className="ai-explorer__suggested-chip" onClick={() => handleSend(p)} disabled={asking}>
+                                    <Sparkles size={11} strokeWidth={2} />
+                                    {p}
+                                </button>
+                            ))}
+                        </div>
+
+                        <div className="ai-explorer__messages">
+                            {messages.length === 0 && (
+                                <p className="ai-explorer__chat-empty">
+                                    {persona.emptyState}
+                                </p>
+                            )}
+                            {messages.map((m, i) => (
+                                <div key={i} className={`ai-explorer__message ai-explorer__message--${m.role}`}>
+                                    {m.role === 'assistant' && m.agentUsed && (
+                                        <span className="ai-explorer__agent-badge">{m.agentUsed}</span>
+                                    )}
+                                    <div className="ai-explorer__message-content">
+                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{normalizeMarkdown(m.content)}</ReactMarkdown>
+                                    </div>
+                                    {m.sourceFiles?.length > 0 && (
+                                        <div className="ai-explorer__sources">
+                                            {m.sourceFiles.map((f) => (
+                                                <span key={f} className="ai-explorer__source-chip"><button type="button" onClick={()=>openFile(f)} title={`Open ${f}`}>{f.split('/').pop()}</button><EyeSource file={f} compact/></span>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                            {asking && (
+                                <div className="ai-explorer__message ai-explorer__message--assistant ai-explorer__message--loading">
+                                    <Loader2 size={13} className="ai-explorer__spinner" /> {persona.thinkingLabel}
+                                </div>
+                            )}
+                            <div ref={chatEndRef} />
+                        </div>
+
+                        <div className="ai-explorer__chat-input-row">
+                            <input
+                                value={question}
+                                onChange={(e) => setQuestion(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') handleSend(); }}
+                                placeholder={persona.placeholder}
+                                disabled={asking}
+                            />
+                            <button onClick={() => handleSend()} disabled={asking || !question.trim()}>
+                                <Send size={14} strokeWidth={2} />
+                            </button>
+                        </div>
+                    </div>
+                </ResizablePanel>
+            </div>
+        </div>
+    );
+}

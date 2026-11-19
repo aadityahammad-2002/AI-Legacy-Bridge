@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 
 import UploadPage from './pages/UploadPage.jsx';
 import WorkspaceSelectionPage from './pages/WorkspaceSelectionPage.jsx';
+import WorkspaceDashboard from './workspace/WorkspaceDashboard.jsx';
 import VisualizationExplorer from './pages/VisualizationExplorer.jsx';
 import AiExplorer from './pages/AiExplorer.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
@@ -25,7 +26,7 @@ export default function App({ startOnUpload = false }) {
     const [repositoryId, setRepositoryId] = useState(null);
     const [repoMeta, setRepoMeta] = useState(null);
     const [analysisResult, setAnalysisResult] = useState(null);
-    const [activeWorkspace, setActiveWorkspaceState] = useState('visualization');
+    const [activeWorkspace, setActiveWorkspaceState] = useState('dashboard');
     const [focusedContext, setFocusedContext] = useState(null);
     const [ingestWarning, setIngestWarning] = useState(null);
     const [showSettings, setShowSettings] = useState(false);
@@ -54,7 +55,9 @@ export default function App({ startOnUpload = false }) {
                 setRepositoryId(savedRepositoryId);
                 setRepoMeta(snapshot.repository);
                 setAnalysisResult(snapshot);
-                setActiveWorkspaceState(getCurrentWorkspace());
+                const remembered = getCurrentWorkspace();
+                const validWorkspaces = new Set(['dashboard', 'visualization', 'ai-explorer', 'tests', 'migrate', 'architecture', 'database', 'api', 'call-graph', 'security', 'quality', 'ml-insights', 'visualization-preview', 'ai-preview']);
+                setActiveWorkspaceState(validWorkspaces.has(remembered) ? remembered : 'dashboard');
                 setView('workspace');
             } catch (err) {
                 if (cancelled) return;
@@ -70,7 +73,9 @@ export default function App({ startOnUpload = false }) {
         setRepoMeta(newMeta);
         setAnalysisResult(newResult);
         setIngestWarning(ingestError || null);
-        setView('workspace-select');
+        setActiveWorkspaceState('dashboard');
+        setCurrentWorkspace('dashboard');
+        setView('workspace');
     }, []);
 
     const handleEnterWorkspace = useCallback((workspace) => {
@@ -79,7 +84,7 @@ export default function App({ startOnUpload = false }) {
         setView('workspace');
     }, []);
 
-    const handleNavigate = useCallback((workspace) => {
+    const handleNavigate = useCallback((workspace, context = null) => {
         if (workspace === 'settings') {
             setShowSettings(true);
             return;
@@ -87,7 +92,8 @@ export default function App({ startOnUpload = false }) {
         setShowSettings(false);
         setCurrentWorkspace(workspace);
         setActiveWorkspaceState(workspace);
-        if (workspace !== 'ai-explorer') setFocusedContext(null);
+        if (workspace === 'ai-explorer' && context?.file) setFocusedContext({selectedNode:context.file});
+        else if (workspace !== 'ai-explorer') setFocusedContext(null);
     }, []);
 
     const handleBackFromSettings = useCallback(() => {
@@ -162,7 +168,7 @@ export default function App({ startOnUpload = false }) {
         );
     }
 
-    if (activeWorkspace === 'tests') {
+    if (activeWorkspace === '__legacy-tests') {
         return (
             <TestsPage
                 repositoryId={repositoryId}
@@ -174,7 +180,7 @@ export default function App({ startOnUpload = false }) {
         );
     }
 
-    if (activeWorkspace === 'migrate') {
+    if (activeWorkspace === '__legacy-migrate') {
         return (
             <MigratePage
                 repositoryId={repositoryId}
@@ -184,6 +190,19 @@ export default function App({ startOnUpload = false }) {
                 onExitRepository={handleExitRepository}
             />
         );
+    }
+
+    if (activeWorkspace !== 'visualization') {
+        return <WorkspaceDashboard
+            analysisResult={analysisResult}
+            repoMeta={repoMeta}
+            repositoryId={repositoryId}
+            activeWorkspace={activeWorkspace}
+            onNavigate={handleNavigate}
+            onExitRepository={handleExitRepository}
+            onSettings={() => setShowSettings(true)}
+            ingestWarning={ingestWarning}
+        />;
     }
 
     return (

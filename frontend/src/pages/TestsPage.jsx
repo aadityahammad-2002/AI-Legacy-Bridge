@@ -15,7 +15,7 @@ const safeArray = (value) => Array.isArray(value) ? value : [];
 const functionKey = (fn) => `${fn.file}:${fn.name}:${fn.line ?? ''}`;
 
 /** Only repository-derived evidence is displayed. No synthetic pass rate, coverage or runner output. */
-export default function TestsPage({ analysisResult, activeWorkspace, onNavigate, onExitRepository }) {
+export default function TestsPage({ embedded = false, analysisResult, activeWorkspace, onNavigate, onExitRepository }) {
     const functions = safeArray(analysisResult?.functions);
     const links = safeArray(analysisResult?.testLinkage?.links);
     const endpoints = safeArray(analysisResult?.apiEndpoints);
@@ -65,7 +65,7 @@ export default function TestsPage({ analysisResult, activeWorkspace, onNavigate,
 
     return (
         <div className="tests-page">
-            <TopNavBar activeWorkspace={activeWorkspace} onNavigate={onNavigate} onExitRepository={onExitRepository} />
+            {!embedded && <TopNavBar activeWorkspace={activeWorkspace} onNavigate={onNavigate} onExitRepository={onExitRepository} />}
             <div className="tests-dashboard-wrap">
                 <section className="tests-dashboard" aria-label="Discovered test evidence">
                     <div className="tests-dashboard__main">
